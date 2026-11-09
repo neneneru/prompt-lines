@@ -1,0 +1,206 @@
+.plc-capability { display: none !important; }
+.plc-component {
+    --plc-accent: #8869e5;
+    --plc-control-axis: 29px;
+    --plc-muted: #7c8491;
+    --plc-off-track: rgba(104, 114, 130, .15);
+    --plc-off-border: rgba(113, 123, 140, .4);
+    --plc-row-fill: rgba(113, 123, 140, .08);
+    position: relative;
+    border: 1px solid var(--border-color-primary, rgba(111, 126, 150, .32)) !important;
+    border-radius: 11px !important;
+    background: var(--background-fill-primary, transparent);
+    padding: 0 !important;
+    overflow: visible;
+}
+.plc-component[data-plc-theme="dark"] {
+    --plc-muted: #8b929f;
+    --plc-off-track: rgba(160, 170, 185, .13);
+    --plc-off-border: rgba(160, 170, 185, .28);
+    --plc-row-fill: rgba(160, 170, 185, .07);
+}
+.plc-header {
+    display: flex;
+    align-items: center;
+    min-height: 43px;
+    padding: 6px 12px 6px calc(var(--plc-control-axis) - 14px);
+    border-bottom: 1px solid var(--border-color-primary, rgba(111, 126, 150, .24));
+    background: linear-gradient(180deg, rgba(128, 138, 156, .04), transparent);
+    border-radius: 10px 10px 0 0;
+    box-sizing: border-box;
+}
+.plc-brand {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 28px;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #322c52, #504178 58%, #332a53);
+    color: #f0eaff;
+    font-size: 0;
+    line-height: 0;
+    box-shadow: inset 0 1px 0 rgba(204, 184, 255, .11), 0 1px 3px rgba(0, 0, 0, .12);
+    user-select: none;
+}
+/* Draw the two slashes geometrically so font baselines cannot shift them. */
+.plc-brand::before, .plc-brand::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 1.6px;
+    height: 13px;
+    border-radius: 1px;
+    background: currentColor;
+    transform: translate(-50%, -50%) skewX(-18deg);
+    pointer-events: none;
+}
+.plc-brand::before { left: calc(50% - 3px); }
+.plc-brand::after { left: calc(50% + 3px); }
+.plc-divider {
+    flex: 0 0 1px;
+    width: 1px;
+    height: 20px;
+    margin: 0 11px;
+    background: var(--border-color-primary, rgba(111, 126, 150, .3));
+}
+.plc-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.plc-actions button.plc-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-width: 0;
+    height: 29px;
+    padding: 0 10px;
+    border: 1px solid rgba(128, 138, 156, .4);
+    border-radius: 7px;
+    background: linear-gradient(180deg, rgba(128, 138, 156, .09), rgba(128, 138, 156, .02));
+    color: var(--body-text-color, inherit);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+    cursor: pointer;
+}
+.plc-actions button.plc-action:hover:not(:disabled) { border-color: #8b78c9; background: rgba(136, 105, 229, .11); }
+.plc-actions button.plc-action:disabled { opacity: .4; cursor: default; }
+.plc-action-icon {
+    display: inline-flex;
+    flex: 0 0 16px;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+    line-height: 1;
+    opacity: .85;
+}
+.plc-component textarea.plc-input {
+    border: 0 !important;
+    border-radius: 0 0 10px 10px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+.plc-gutter {
+    position: absolute;
+    z-index: 3;
+    overflow: hidden;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+.plc-gutter input.plc-switch {
+    position: absolute !important;
+    left: calc(var(--plc-control-axis) - 16px) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 32px !important;
+    height: 18px !important;
+    min-width: 32px !important;
+    min-height: 18px !important;
+    pointer-events: auto;
+    cursor: pointer;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    border: 1px solid var(--plc-off-border) !important;
+    border-radius: 999px !important;
+    background: var(--plc-off-track) !important;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08) !important;
+    transition: background-color .14s, border-color .14s;
+}
+.plc-gutter input.plc-switch::after {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border: 0;
+    border-radius: 50%;
+    background: #a4aab4;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+    transition: transform .14s, background-color .14s;
+}
+.plc-gutter input.plc-switch:checked {
+    border-color: #8f73e7 !important;
+    background: linear-gradient(100deg, #7454ce, #9674ef) !important;
+}
+.plc-gutter input.plc-switch:checked::after { transform: translateX(14px); background: #faf9ff; }
+.plc-gutter input.plc-switch:hover:not(:disabled) { filter: brightness(1.12); }
+.plc-gutter input.plc-switch:disabled { cursor: default; opacity: .35; }
+.plc-gutter input.plc-switch:indeterminate::after { transform: translateX(7px); }
+.plc-gutter input.plc-switch:focus-visible,
+.plc-actions button.plc-action:focus-visible { outline: 2px solid var(--plc-accent); outline-offset: 2px; }
+.plc-mirror, .plc-text {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    border: 0 !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+    pointer-events: none !important;
+}
+.plc-mirror {
+    position: fixed !important;
+    top: 0;
+    left: -100000px;
+    visibility: hidden !important;
+    overflow: hidden;
+    contain: layout style;
+}
+.plc-overlay {
+    position: absolute;
+    z-index: 2;
+    overflow: hidden;
+    pointer-events: none !important;
+    border-radius: 0 0 10px 10px;
+}
+.plc-overlay[hidden], .plc-status[hidden], .plc-switch[hidden] { display: none !important; }
+.plc-text { position: absolute; top: 0; left: 0; color: var(--plc-foreground); }
+.plc-render-line { color: var(--plc-foreground); }
+.plc-render-line.plc-commented, .plc-render-line .plc-commented {
+    color: var(--plc-muted);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+    text-decoration-color: var(--plc-muted);
+    text-decoration-skip-ink: none;
+}
+.plc-row-muted {
+    position: absolute;
+    left: 7px;
+    right: 7px;
+    border-radius: 7px;
+    background: var(--plc-row-fill);
+    pointer-events: none !important;
+}
+.plc-status { font-size: 12px; line-height: 1.5; color: #b97818; padding: 7px 12px; }
+@media (prefers-reduced-motion: reduce) {
+    .plc-gutter input.plc-switch, .plc-gutter input.plc-switch::after { transition: none; }
+}
+@media (forced-colors: active) {
+    .plc-gutter input.plc-switch { appearance: auto !important; }
+    .plc-gutter input.plc-switch::after { display: none; }
+    .plc-actions button.plc-action { border-color: ButtonText; }
+}
