@@ -21,6 +21,8 @@
 }
 .plc-header {
     display: flex;
+    flex-wrap: wrap;
+    row-gap: 6px;
     align-items: center;
     min-height: 43px;
     padding: 6px 12px 6px calc(var(--plc-control-axis) - 14px);
@@ -67,6 +69,21 @@
     background: var(--border-color-primary, rgba(111, 126, 150, .3));
 }
 .plc-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.plc-header > .plc-hint {
+    display: block;
+    flex: 0 0 auto;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding-left: 12px;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    color: var(--plc-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: default;
+}
+.plc-hint.plc-hint-ready { color: var(--plc-accent); }
 .plc-actions button.plc-action {
     display: inline-flex;
     align-items: center;
@@ -177,7 +194,15 @@
     pointer-events: none !important;
     border-radius: 0 0 10px 10px;
 }
-.plc-overlay[hidden], .plc-status[hidden], .plc-switch[hidden] { display: none !important; }
+.plc-overlay[hidden], .plc-status[hidden], .plc-switch[hidden], .plc-hint[hidden] { display: none !important; }
+.plc-tag-hover {
+    position: absolute;
+    border-radius: 3px;
+    background: rgba(136, 105, 229, .13);
+    box-shadow: inset 0 0 0 1px rgba(136, 105, 229, .4);
+    pointer-events: none !important;
+}
+
 .plc-text { position: absolute; top: 0; left: 0; color: var(--plc-foreground); }
 .plc-render-line { color: var(--plc-foreground); }
 .plc-render-line.plc-commented, .plc-render-line .plc-commented {
@@ -200,6 +225,7 @@
     .plc-gutter input.plc-switch, .plc-gutter input.plc-switch::after { transition: none; }
 }
 @media (forced-colors: active) {
+    .plc-tag-hover { background: transparent; box-shadow: none; outline: 1px solid Highlight; outline-offset: -1px; }
     .plc-gutter input.plc-switch { appearance: auto !important; }
     .plc-gutter input.plc-switch::after { display: none; }
     .plc-actions button.plc-action { border-color: ButtonText; }

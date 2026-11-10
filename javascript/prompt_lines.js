@@ -1,7 +1,7 @@
-/* Prompt Lines 1.1.4. Original textareas and host parsing stay intact. */
+/* Prompt Lines 1.2.4. Original textareas and host parsing stay intact. */
 (() => {
     'use strict';
-    const API_VERSION = '1.1.4';
+    const API_VERSION = '1.2.4';
     // Match Python's Unicode whitespace, excluding LF (the physical line separator).
     const SPACE = '[\\t \\r\\f\\v\\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
     const blank = text => new RegExp(`^(?:${SPACE}|\\n)*$`).test(text);
@@ -55,17 +55,179 @@
         if (syntax.dangling) remove(/(?:\/\*|\*\/)[^\n]*(?:\n|$)/g, '\n', true);
         return {hidden, blockHidden, effective: units.map(unit => unit.char).join('')};
     }
+    function blockRanges(value) {
+        return Array.from(value.matchAll(/\/\*[\s\S]*?\*\//g), match => ({
+            start: match.index, end: match.index + match[0].length,
+            simple: !match[0].includes('\n') && !match[0].slice(2, -2).includes('/*')
+        }));
+    }
+    function reversibleBlock(value, block, syntax) {
+        if (!block.simple) return false;
+        const body = value.slice(block.start + 2, block.end - 2);
+        const inner = tagTargets(body, syntax, false);
+        return inner.length === 1 && !inner[0].off &&
+            blank(body.slice(0, inner[0].start)) && blank(body.slice(inner[0].end));
+    }
+    function tagTargets(value, config = '//', restoreLines = true) {
+        const syntax = syntaxOf(config);
+        // Inline removal must be confirmed by the host, not inferred from its name.
+        if (!syntax.marker || syntax.block !== 'any') return [];
+        const ranges = commentRanges(value, syntax);
+        const blocks = blockRanges(value);
+        const blockAt = new Map(blocks.map(block => [block.start, block]));
+        const lastBlockEnd = blocks.length ? blocks[blocks.length - 1].end : 0;
+        const unfinished = value.indexOf('/*', lastBlockEnd);
+        const targets = [];
+        const protectedRows = new Set();
+        const stack = [];
+        const closing = {'(': ')', '[': ']', '{': '}', '<': '>'};
+        let offset = 0;
+        value.split('\n').forEach((line, row) => {
+            const lineStart = offset;
+            const lineEnd = offset + line.length;
+            offset = lineEnd + 1;
+            // The host finds block markers even after a line comment or backslash.
+            // Never introduce a closing marker downstream of an unfinished block.
+            let unsafe = stack.length > 0 || (unfinished >= 0 && lineEnd > unfinished);
+            for (const match of line.matchAll(/\/\*|\*\//g)) {
+                if (!ranges.blockHidden[lineStart + match.index]) unsafe = true;
+            }
+            let segmentStart = lineStart;
+            let activeEnd = lineEnd;
+            const segments = [];
+            const cuts = [];
+            for (let at = lineStart; at < lineEnd; at++) {
+                if (ranges.blockHidden[at]) {
+                    const block = blockAt.get(at);
+                    if (!block || !block.simple) unsafe = true;
+                    if (block) at = Math.min(lineEnd, block.end) - 1;
+                    continue;
+                }
+                // Native line comments cannot be re-enabled with a block wrapper.
+                if (ranges.hidden[at]) {
+                    // Whitespace trimmed before a later marker must not conceal an earlier block target.
+                    if (blank(value[at])) continue;
+                    activeEnd = at; break;
+                }
+                const char = value[at];
+                if (char === '\\') { at++; continue; }
+                if (value.startsWith('/*', at) || value.startsWith('*/', at)) { unsafe = true; break; }
+                if (closing[char]) stack.push(closing[char]);
+                else if (')]}>'.includes(char)) {
+                    if (stack.pop() !== char) unsafe = true;
+                } else if (char === ',' && !stack.length) cuts.push(at);
+            }
+            if (stack.length) unsafe = true;
+            for (const at of cuts) {
+                segments.push({start: segmentStart, end: at});
+                segmentStart = at + 1;
+            }
+            segments.push({start: segmentStart, end: activeEnd});
+            if (unsafe) { protectedRows.add(row); return; }
+            for (const segment of segments) {
+                let {start, end} = segment;
+                while (start < end && blank(value[start])) start++;
+                while (end > start && blank(value[end - 1])) end--;
+                if (start === end) continue;
+                const contained = blocks.filter(block => block.start < end && block.end > start);
+                const block = contained.length === 1 && contained[0];
+                if (block && block.simple && block.start === start && block.end === end) {
+                    // Only unwrap a self-contained group that can be toggled back intact.
+                    if (!reversibleBlock(value, block, syntax)) continue;
+                    targets.push({start, end, row, off: true});
+                } else if (!contained.length && !ranges.hidden.slice(start, end).some(Boolean)) {
+                    targets.push({start, end, row, off: false});
+                }
+            }
+        });
+        if (restoreLines) targets.push(...lineRestoreTargets(value, syntax, protectedRows));
+        return targets.sort((a, b) => a.start - b.start);
+    }
+    function lineRestoreTargets(value, syntax, protectedRows) {
+        const targets = [];
+        const ranges = commentRanges(value, syntax);
+        const blocks = blockRanges(value);
+        const lastBlockEnd = blocks.length ? blocks[blocks.length - 1].end : 0;
+        const unfinished = value.indexOf('/*', lastBlockEnd);
+        const markerPattern = syntax.markers.map(marker => marker === '//' ? '\\/\\/' : '#').join('|');
+        let offset = 0;
+        value.split('\n').forEach((line, row) => {
+            const lineStart = offset;
+            const lineEnd = offset + line.length;
+            offset = lineEnd + 1;
+            if (protectedRows.has(row)) return;
+            const match = new RegExp(`^(${SPACE}*)(${markerPattern})`).exec(line);
+            if (!match || (unfinished >= 0 && lineEnd > unfinished)) return;
+            const markerStart = match[1].length;
+            const markerLength = match[2].length;
+            if (ranges.blockHidden[lineStart + markerStart] || blocks.some(block =>
+                block.start < lineEnd && block.end > lineStart && !block.simple)) return;
+            const inner = line.slice(0, markerStart) + line.slice(markerStart + markerLength);
+            const peers = tagTargets(inner, syntax, false);
+            if (!peers.length) return;
+            const innerRanges = commentRanges(inner, syntax);
+            const covered = Array(inner.length).fill(false);
+            for (const peer of peers) for (let at = peer.start; at < peer.end; at++) covered[at] = true;
+            // Reject any active expression that we cannot preserve as a complete group.
+            for (let at = 0; at < inner.length; at++) {
+                if (!covered[at] && !innerRanges.hidden[at] && inner[at] !== ',' && !blank(inner[at])) return;
+            }
+            const sourcePosition = position => lineStart + position + (position >= markerStart ? markerLength : 0);
+            const sourcePeers = peers.map(peer => ({start: sourcePosition(peer.start), end: sourcePosition(peer.end), row, off: peer.off}));
+            const plan = {start: lineStart + markerStart, end: lineStart + markerStart + markerLength, peers: sourcePeers};
+            sourcePeers.forEach((peer, selected) => targets.push({...peer, off: true, lineRestore: plan, selected}));
+        });
+        return targets;
+    }
+    function editsForTag(target) {
+        if (!target) return [];
+        if (target.lineRestore) {
+            const plan = target.lineRestore;
+            const edits = [{start: plan.start, end: plan.end, text: ''}];
+            plan.peers.forEach((peer, index) => {
+                // Enable only the chosen group; all other groups must remain muted.
+                if (index === target.selected ? !peer.off : peer.off) return;
+                edits.push(...editsForTag(peer));
+            });
+            return edits;
+        }
+        return target.off ? [
+            {start: target.start, end: target.start + 2, text: ''},
+            {start: target.end - 2, end: target.end, text: ''}
+        ] : [
+            {start: target.start, end: target.start, text: '/*'},
+            {start: target.end, end: target.end, text: '*/'}
+        ];
+    }
+    function joinsCommentBoundary(text, blocks, offset) {
+        const removed = new Set();
+        for (const block of blocks) {
+            for (const at of [block.start, block.start + 1, block.end - 2, block.end - 1]) removed.add(at - offset);
+        }
+        let previous = -1;
+        for (let at = 0; at < text.length; at++) {
+            if (removed.has(at)) continue;
+            if (previous >= 0 && at !== previous + 1 && ['//', '/*', '*/'].includes(text[previous] + text[at])) return true;
+            previous = at;
+        }
+        return false;
+    }
     function linesOf(value, config = '//') {
         const syntax = syntaxOf(config);
         const ranges = commentRanges(value, syntax);
+        const blocks = blockRanges(value);
+        const simpleBlocks = new Map(syntax.block === 'any' ? blocks.filter(block => reversibleBlock(value, block, syntax)).map(block => [block.start, block]) : []);
         let offset = 0;
         let inBlock = false;
         return value.split('\n').map((text, index) => {
             const start = offset;
             offset += text.length + 1;
             // Also protect incomplete block boundaries while the user is editing.
-            let blocked = inBlock || ranges.blockHidden.slice(start, start + text.length).some(Boolean);
+            const rowBlocks = blocks.filter(block => block.start < start + text.length && block.end > start);
+            let blocked = inBlock || rowBlocks.some(block => !simpleBlocks.has(block.start));
             for (let i = 0; i < text.length; i++) {
+                const simple = simpleBlocks.get(start + i);
+                if (simple) { i = simple.end - start - 1; continue; }
                 const pair = text.slice(i, i + 2);
                 if (inBlock) {
                     if (pair === '*/') { inBlock = false; blocked = true; i++; }
@@ -88,18 +250,48 @@
                 else parts.push({text: text[i], commented});
                 if (!commented) active += text[i];
             }
-            return {text, index, start, blocked, parts, active,
-                empty: blank(text), off: !blank(text) && blank(active),
+            // Commas left between muted groups do not make a prompt row active.
+            const allMuted = blank(active) || (rowBlocks.length > 0 && blank(active.replace(/,/g, '')));
+            // Unwrapping adjacent blocks must not turn their text into a new comment marker.
+            if (!blocked && rowBlocks.length && joinsCommentBoundary(text, rowBlocks, start)) blocked = true;
+            return {text, index, start, blocked, parts, active, blocks: rowBlocks,
+                empty: blank(text), off: !blank(text) && allMuted,
                 comment: match ? {at: start + match[1].length, marker: match[2]} : null};
         });
     }
+    function enabledRowText(line, syntax) {
+        const markerPattern = syntax.markers.map(marker => marker === '//' ? '\\/\\/' : '#').join('|');
+        const leading = new RegExp(`^(${SPACE}*)(?:${markerPattern})`);
+        let text = line.text;
+        for (let match; (match = leading.exec(text));) {
+            text = match[1] + text.slice(match[0].length);
+        }
+        // Row-on deliberately resets individual mute states instead of remembering them.
+        if (line.blocks.length) text = text.replace(/\/\*([\s\S]*?)\*\//g, '$1');
+        return text;
+    }
+    function rowEdit(line, text) {
+        if (text === line.text) return null;
+        let start = 0, oldEnd = line.text.length, newEnd = text.length;
+        while (start < oldEnd && start < newEnd && line.text[start] === text[start]) start++;
+        while (oldEnd > start && newEnd > start && line.text[oldEnd - 1] === text[newEnd - 1]) { oldEnd--; newEnd--; }
+        return {start: line.start + start, end: line.start + oldEnd, text: text.slice(start, newEnd)};
+    }
+    function enableRow(line, syntax) {
+        if (!line || line.empty || line.blocked || !syntax.marker) return null;
+        return rowEdit(line, enabledRowText(line, syntax));
+    }
+    function disableRow(line, syntax) {
+        if (!line || line.empty || line.blocked || !syntax.marker) return null;
+        const plain = enabledRowText(line, syntax);
+        const indent = new RegExp(`^${SPACE}*`).exec(plain)[0].length;
+        const text = plain.slice(0, indent) + syntax.marker + plain.slice(indent);
+        return rowEdit(line, text);
+    }
     function editForRow(line, syntax) {
         if (!line || line.empty || line.blocked || !syntax.marker) return null;
-        if (line.comment) {
-            return {start: line.comment.at, end: line.comment.at + line.comment.marker.length, text: ''};
-        }
-        const indent = new RegExp(`^${SPACE}*`).exec(line.text)[0].length;
-        return {start: line.start + indent, end: line.start + indent, text: syntax.marker};
+        if (line.off || line.comment) return enableRow(line, syntax);
+        return disableRow(line, syntax);
     }
     function editFor(value, index, config = '//') {
         const syntax = syntaxOf(config);
@@ -117,8 +309,14 @@
         const syntax = syntaxOf(config);
         return linesOf(value, syntax).flatMap(row => {
             if (row.empty || row.blocked) return [];
-            const off = isCommented(row, syntax);
-            if ((mode === 'enable' && !off) || (mode === 'disable' && off)) return [];
+            if (mode === 'enable') {
+                const edit = enableRow(row, syntax);
+                return edit ? [edit] : [];
+            }
+            if (mode === 'disable') {
+                const edit = disableRow(row, syntax);
+                return edit ? [edit] : [];
+            }
             const edit = editForRow(row, syntax);
             return edit ? [edit] : [];
         });
@@ -132,7 +330,7 @@
     }
     // Pure functions are exported only to the Node test runner, never as WebUI globals.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges};
+        module.exports = {linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
         return;
     }
     if (window.__promptLinesLoaded) return;
@@ -159,6 +357,7 @@
         const host = ta.parentElement;
         const original = {
             padding: ta.style.paddingLeft, position: host.style.position,
+            cursor: ta.style.cursor,
             color: ta.style.getPropertyValue('color'), colorPriority: ta.style.getPropertyPriority('color'),
             caret: ta.style.getPropertyValue('caret-color'), caretPriority: ta.style.getPropertyPriority('caret-color')
         };
@@ -177,12 +376,14 @@
         header.setAttribute('role', 'group');
         header.setAttribute('aria-label', 'Prompt Lines');
         const brand = make('span', 'plc-brand', '//');
-        brand.title = 'Prompt Lines';
+        brand.title = 'Prompt Lines 1.2.4 · Alt＋クリックでカンマ区切りのタグを切替';
         brand.setAttribute('aria-hidden', 'true');
         const divider = make('span', 'plc-divider');
         divider.setAttribute('aria-hidden', 'true');
         const actions = make('div', 'plc-actions');
-        header.append(brand, divider, actions);
+        const hint = make('span', 'plc-hint', 'Alt+クリックで個別にコメントアウト');
+        hint.title = 'Altを押しながらタグをクリックすると、そのまとまりをオン／オフできます';
+        header.append(brand, divider, actions, hint);
         const gutter = make('div', 'plc-gutter');
         gutter.setAttribute('role', 'group');
         gutter.setAttribute('aria-label', '行の有効／無効。オンは有効、オフはコメントアウト');
@@ -191,11 +392,13 @@
         const highlights = make('div', 'plc-highlights');
         const textLayer = make('div', 'plc-text');
         overlay.append(highlights, textLayer);
+        const hoverLayer = make('div', 'plc-overlay plc-hover');
+        hoverLayer.setAttribute('aria-hidden', 'true');
         const mirror = make('div', 'plc-mirror');
         mirror.setAttribute('aria-hidden', 'true');
         const status = make('div', 'plc-status');
         status.setAttribute('role', 'status');
-        host.append(overlay, gutter, mirror);
+        host.append(overlay, hoverLayer, gutter, mirror);
         component.prepend(header);
         component.append(status);
         const controls = [];
@@ -245,7 +448,7 @@
             ta.addEventListener('input', seen);
             try {
                 // A single native editing transaction also keeps bulk actions undoable.
-                document.execCommand('insertText', false, replacement);
+                try { document.execCommand('insertText', false, replacement); } catch (_) { /* Fall back below. */ }
                 if (ta.value === value) ta.setRangeText(replacement, first, endOfEdit, 'preserve');
                 if (ta.value !== expected) {
                     lastValue = null; schedule();
@@ -262,12 +465,124 @@
             if (keyboard) focusTarget.focus({preventScroll: true});
             requestAnimationFrame(() => { ta.scrollTop = top; ta.scrollLeft = left; schedule(); });
         }
+        function targetRects(target) {
+            const row = rows[target.row];
+            const node = spans[target.row] && spans[target.row].firstChild;
+            if (!row || !node) return [];
+            const range = document.createRange();
+            range.setStart(node, target.start - row.start);
+            range.setEnd(node, target.end - row.start);
+            return Array.from(range.getClientRects());
+        }
+        function clickedTag(event) {
+            const bounds = ta.getBoundingClientRect();
+            if (event.clientX < bounds.left + ta.clientLeft || event.clientX >= bounds.left + ta.clientLeft + ta.clientWidth ||
+                event.clientY < bounds.top + ta.clientTop || event.clientY >= bounds.top + ta.clientTop + ta.clientHeight) return null;
+            const mirrorBounds = mirror.getBoundingClientRect();
+            const x = event.clientX - bounds.left - ta.clientLeft + mirrorBounds.left + ta.scrollLeft;
+            const y = event.clientY - bounds.top - ta.clientTop + mirrorBounds.top + ta.scrollTop;
+            for (const target of tagTargets(ta.value, capability())) {
+                // Hit-test glyphs, independently of spelling tools changing the caret or selection.
+                if (targetRects(target).some(rect =>
+                    x >= rect.left - 1 && x <= rect.right + 1 && y >= rect.top && y <= rect.bottom)) return target;
+            }
+            return null;
+        }
+        let pendingAlt = null, suppressAltClick = false;
+        let altHeld = false, pointerPosition = null, hoverRaf = 0;
+        const pointerEvents = typeof window.PointerEvent === 'function';
+        const samePointer = event => pendingAlt &&
+            (!pointerEvents || pendingAlt.pointerId === event.pointerId);
+        const consume = event => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        function drawHover() {
+            hoverLayer.replaceChildren();
+            ta.style.cursor = original.cursor;
+            hint.classList.remove('plc-hint-ready');
+            if (!altHeld || !pointerPosition || composing || ta.disabled || ta.readOnly || ta.value !== lastValue) return;
+            const target = clickedTag(pointerPosition);
+            if (!target) return;
+            ta.style.cursor = 'pointer';
+            hint.classList.add('plc-hint-ready');
+            const mirrorBounds = mirror.getBoundingClientRect();
+            for (const rect of targetRects(target)) {
+                const mark = make('i', 'plc-tag-hover');
+                mark.style.left = `${rect.left - mirrorBounds.left - ta.scrollLeft - 1}px`;
+                mark.style.top = `${rect.top - mirrorBounds.top - ta.scrollTop}px`;
+                mark.style.width = `${rect.right - rect.left + 2}px`;
+                mark.style.height = `${rect.bottom - rect.top}px`;
+                hoverLayer.append(mark);
+            }
+        }
+        function scheduleHover() {
+            if (!hoverRaf && !destroyed) hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; drawHover(); });
+        }
+        // A lost release must not leave another prompt's controller owning the next gesture.
+        listen(window, pointerEvents ? 'pointerdown' : 'mousedown', () => {
+            pendingAlt = null; suppressAltClick = false;
+        }, true);
+        listen(window, 'scroll', scheduleHover, {capture: true, passive: true});
+        listen(ta, pointerEvents ? 'pointermove' : 'mousemove', event => {
+            pointerPosition = {clientX: event.clientX, clientY: event.clientY};
+            altHeld = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+            scheduleHover();
+        }, {passive: true});
+        listen(ta, pointerEvents ? 'pointerleave' : 'mouseleave', () => { pointerPosition = null; scheduleHover(); });
+        listen(window, 'keydown', event => {
+            if (event.key === 'Escape') {
+                pendingAlt = null; altHeld = false; pointerPosition = null; scheduleHover(); return;
+            }
+            altHeld = (event.key === 'Alt' || event.altKey) && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+            scheduleHover();
+        });
+        listen(window, 'keyup', event => {
+            altHeld = event.key !== 'Alt' && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+            scheduleHover();
+        });
+        // Capture only a recognized Alt gesture before the browser's spelling UI handles it.
+        // Normal editing and the user's spellcheck setting are left untouched.
+        listen(ta, pointerEvents ? 'pointerdown' : 'mousedown', event => {
+            pendingAlt = null; suppressAltClick = false;
+            if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0 ||
+                event.detail > 1 || event.isPrimary === false || composing || event.isComposing || ta.disabled || ta.readOnly) return;
+            const cap = capability();
+            if (!cap.marker || syntaxOf(cap).block !== 'any') return;
+            render();
+            const target = clickedTag(event);
+            if (!target) return;
+            pointerPosition = {clientX: event.clientX, clientY: event.clientY};
+            altHeld = true;
+            drawHover();
+            pendingAlt = {target, value: ta.value, x: event.clientX, y: event.clientY,
+                pointerId: event.pointerId, moved: false};
+            suppressAltClick = true;
+            consume(event);
+        }, true);
+        listen(window, pointerEvents ? 'pointermove' : 'mousemove', event => {
+            if (samePointer(event) && Math.hypot(event.clientX - pendingAlt.x, event.clientY - pendingAlt.y) > 4) pendingAlt.moved = true;
+        }, true);
+        listen(window, pointerEvents ? 'pointerup' : 'mouseup', event => {
+            if (!samePointer(event)) return;
+            const gesture = pendingAlt; pendingAlt = null;
+            consume(event);
+            if (gesture.moved || ta.value !== gesture.value || composing || ta.disabled || ta.readOnly) return;
+            const target = clickedTag(event);
+            if (!target || target.start !== gesture.target.start || target.end !== gesture.target.end || target.off !== gesture.target.off) return;
+            apply(editsForTag(target), ta, event);
+        }, true);
+        if (pointerEvents) listen(window, 'pointercancel', event => { if (samePointer(event)) pendingAlt = null; }, true);
+        listen(window, 'blur', () => { pendingAlt = null; altHeld = false; pointerPosition = null; scheduleHover(); });
+        listen(ta, 'click', event => {
+            if (suppressAltClick) { suppressAltClick = false; consume(event); }
+        }, true);
         for (const [mode, icon, label] of [['enable', '✓', '全有効'], ['disable', '−', '全無効'], ['invert', '⇄', '反転']]) {
             const button = make('button', 'plc-action');
             button.type = 'button'; button.dataset.mode = mode;
             const glyph = make('span', 'plc-action-icon', icon); glyph.setAttribute('aria-hidden', 'true');
             button.append(glyph, document.createTextNode(label));
-            button.title = `${label}（空行・ブロックコメントは変更しません）`;
+            button.title = `${label}（行の有効化は個別コメントも解除。空行・保護範囲は変更しません）`;
             button.addEventListener('mousedown', event => event.preventDefault());
             button.addEventListener('click', event => apply(editsForMode(ta.value, capability(), mode), button, event));
             actions.append(button); controls.push(button);
@@ -325,10 +640,18 @@
                     box.title = row.blocked ? 'ブロックコメント内・境界の行は保護されています' :
                         row.empty ? '空行' : composing ? '日本語入力の確定後に切り替えできます' :
                         `${i + 1}行目：${commented ? 'オフ（コメントアウト）。クリックで有効化' : 'オン（有効）。クリックでコメントアウト'}`;
-                    visibleSpans[i].classList.toggle('plc-commented', commented && !!cap.marker);
+                    // The switch tracks active groups; only native-removed text gets a strike.
+                    visibleSpans[i].classList.toggle('plc-commented', commented && !!cap.marker && blank(row.active));
                 });
                 const eligible = rows.filter(row => !row.empty && !row.blocked);
                 controls.forEach(button => { button.disabled = !cap.marker || composing || ta.disabled || ta.readOnly || !eligible.length; });
+                const tagAvailable = !!cap.marker && syntaxOf(cap).block === 'any';
+                // Keep the discoverability label visible even while host detection is pending.
+                // Availability is enforced by the gesture handler, not by hiding the label.
+                hint.hidden = false;
+                hint.setAttribute('aria-disabled', String(!tagAvailable));
+                hint.title = tagAvailable ? 'Altを押しながらタグをクリックすると、そのまとまりをオン／オフできます' :
+                    '本体の部分コメント機能を確認できないため、Alt＋クリックは現在利用できません';
                 status.hidden = !!cap.marker;
                 status.textContent = cap.reason === 'disabled' ? '設定の「Remove Comments from Prompts」を有効にして、UIを再読込してください。' :
                     cap.reason === 'loading' ? '本体のコメント機能を確認中。表示が変わらない場合はWebUIを再起動してください。' :
@@ -356,6 +679,7 @@
             gutter.style.width = `${gutterWidth}px`;
             overlay.style.left = gutter.style.left; overlay.style.top = gutter.style.top;
             overlay.style.width = `${ta.clientWidth}px`; overlay.style.height = `${ta.clientHeight}px`;
+            for (const prop of ['left', 'top', 'width', 'height']) hoverLayer.style[prop] = overlay.style[prop];
             textLayer.style.transform = `translate(${-ta.scrollLeft}px, ${-ta.scrollTop}px)`;
             lastWidth = ta.clientWidth; lastHeight = ta.clientHeight; lastTheme = themeSignature();
             const mirrorBounds = mirror.getBoundingClientRect();
@@ -385,6 +709,7 @@
             // Keep the original editor, selection, caret, keyboard and browser undo stack.
             // During composition/high-contrast mode, show native text instead of the paint layer.
             nativeText(!useOverlay, foreground);
+            drawHover();
         }
         listen(ta, 'input', schedule); listen(ta, 'change', schedule);
         listen(ta, 'scroll', schedule, {passive: true});
@@ -401,10 +726,11 @@
             },
             destroy() {
                 destroyed = true; if (raf) cancelAnimationFrame(raf);
+                if (hoverRaf) cancelAnimationFrame(hoverRaf);
                 listeners.forEach(fn => fn()); if (observer) observer.disconnect();
                 nativeText(true);
-                gutter.remove(); mirror.remove(); overlay.remove(); status.remove(); header.remove();
-                ta.style.paddingLeft = original.padding; host.style.position = original.position;
+                gutter.remove(); mirror.remove(); overlay.remove(); hoverLayer.remove(); status.remove(); header.remove();
+                ta.style.paddingLeft = original.padding; ta.style.cursor = original.cursor; host.style.position = original.position;
                 ta.classList.remove('plc-input'); component.classList.remove('plc-component');
                 component.style.removeProperty('--plc-foreground'); delete component.dataset.plcTheme;
             }
