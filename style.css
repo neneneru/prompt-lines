@@ -1,4 +1,69 @@
 .plc-capability { display: none !important; }
+.plc-line-number {
+    position: absolute;
+    left: 6px;
+    width: var(--plc-number-width, 27px);
+    height: 18px;
+    line-height: 18px;
+    text-align: right;
+    font: 11px/18px ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--plc-muted);
+    user-select: none;
+}
+.plc-gutter input.plc-switch { left: calc(var(--plc-number-width, 27px) + 12px) !important; }
+.plc-presets {
+    margin: 10px 12px 0;
+    min-width: 0;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+}
+.plc-preset-track { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 4px; box-sizing: border-box; }
+.plc-presets button.plc-preset {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    max-width: 240px;
+    min-width: 52px;
+    padding: 0 14px;
+    border: 1px solid #9575e7;
+    border-radius: 9px;
+    background: #f0eaff;
+    color: #553694;
+    box-shadow: 0 2px 0 rgba(87, 60, 145, .15);
+    font-family: inherit;
+    line-height: 1.2;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: background-color .12s, border-color .12s;
+}
+.plc-component[data-plc-theme="dark"] button.plc-preset { background: #392e54; color: #eee5ff; border-color: #7962b6; box-shadow: 0 2px 0 #211b32; }
+.plc-presets button.plc-preset:hover:not(:disabled) { background: #e4d8ff; border-color: #7350c0; }
+.plc-component[data-plc-theme="dark"] button.plc-preset:hover:not(:disabled) { background: #4b386e; border-color: #ae8fea; }
+.plc-presets button.plc-preset:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+.plc-presets button.plc-preset:disabled { opacity: .4; cursor: default; }
+.plc-presets button.plc-preset:focus-visible,
+.plc-switch-editor button:focus-visible,
+.plc-switch-input:focus-visible { outline: 2px solid var(--plc-accent); outline-offset: 2px; }
+.plc-switch-editor { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; padding: 12px; border-bottom: 1px solid var(--border-color-primary, #aaa5); }
+.plc-switch-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--body-text-color, inherit); }
+.plc-switch-field:nth-child(3) { grid-column: 1 / -1; }
+.plc-switch-editor .plc-switch-input { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border-color-primary, #9998); border-radius: 7px; color: var(--body-text-color, inherit); background: var(--input-background-fill, #fff); font: inherit; }
+.plc-component[data-plc-theme="dark"] .plc-switch-input { background: var(--input-background-fill, #20222a); color: var(--body-text-color, #eee); }
+.plc-switch-editor textarea.plc-switch-input { min-height: 60px; resize: vertical; }
+.plc-editor-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+.plc-switch-editor button { padding: 6px 13px; border: 1px solid var(--border-color-primary, #9998); border-radius: 7px; color: var(--body-text-color, inherit); background: transparent; cursor: pointer; font-size: 12px; }
+.plc-switch-editor button.plc-editor-delete { margin-left: auto; color: #c65160; }
+.plc-switch-notice { font-size: 12px; color: var(--body-text-color, inherit); padding: 7px 12px; }
+.plc-presets[hidden], .plc-switch-editor[hidden], .plc-switch-notice[hidden], .plc-editor-delete[hidden] { display: none !important; }
 .plc-component {
     --plc-accent: #8869e5;
     --plc-control-axis: 29px;
@@ -84,7 +149,8 @@
     cursor: default;
 }
 .plc-hint.plc-hint-ready { color: var(--plc-accent); }
-.plc-actions button.plc-action {
+.plc-actions button.plc-action,
+.plc-preset-toolbar button.plc-action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -102,8 +168,10 @@
     box-shadow: inset 0 1px rgba(255, 255, 255, .025);
     cursor: pointer;
 }
-.plc-actions button.plc-action:hover:not(:disabled) { border-color: #8b78c9; background: rgba(136, 105, 229, .11); }
-.plc-actions button.plc-action:disabled { opacity: .4; cursor: default; }
+.plc-actions button.plc-action:hover:not(:disabled),
+.plc-preset-toolbar button.plc-action:hover:not(:disabled) { border-color: #8b78c9; background: rgba(136, 105, 229, .11); }
+.plc-actions button.plc-action:disabled,
+.plc-preset-toolbar button.plc-action:disabled { opacity: .4; cursor: default; }
 .plc-action-icon {
     display: inline-flex;
     flex: 0 0 16px;
@@ -130,7 +198,7 @@
 }
 .plc-gutter input.plc-switch {
     position: absolute !important;
-    left: calc(var(--plc-control-axis) - 16px) !important;
+    left: calc(var(--plc-number-width, 27px) + 12px) !important;
     margin: 0 !important;
     padding: 0 !important;
     width: 32px !important;
@@ -228,5 +296,133 @@
     .plc-tag-hover { background: transparent; box-shadow: none; outline: 1px solid Highlight; outline-offset: -1px; }
     .plc-gutter input.plc-switch { appearance: auto !important; }
     .plc-gutter input.plc-switch::after { display: none; }
-    .plc-actions button.plc-action { border-color: ButtonText; }
+    .plc-actions button.plc-action,
+.plc-preset-toolbar button.plc-action { border-color: ButtonText; }
 }
+
+/* Multi-row presets, intentionally scoped to this extension. */
+.plc-switch-editor { grid-template-columns: minmax(0, 1fr); }
+.plc-operation-list { display: grid; gap: 10px; min-width: 0; }
+.plc-operation { display: grid; grid-template-columns: 90px minmax(100px, 1fr) 32px; gap: 8px; padding: 10px; border: 1px solid var(--border-color-primary, #9995); border-radius: 8px; }
+.plc-operation > .plc-switch-field:last-child { grid-column: 1 / -1; }
+.plc-operation > button.plc-operation-remove { align-self: end; padding: 6px; }
+.plc-operation .plc-switch-field[hidden], .plc-import-file[hidden] { display: none !important; }
+.plc-switch-editor > button.plc-operation-add { justify-self: start; }
+.plc-operation-hint { opacity: .7; font-size: 11px; }
+.plc-backup-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.plc-backup-actions button { font-size: 11px; opacity: .8; padding: 4px 8px; }
+.plc-preset-icon { display: inline-flex; align-items: center; justify-content: center; }
+.plc-preset-icon svg { display: block; }
+.plc-store-bridge { display: none !important; }
+.plc-storage-path { font-size: 11px; opacity: .65; overflow-wrap: anywhere; }
+/* Keep row number and prompt text on stable shared vertical axes. */
+.plc-line-number { text-align: left; }
+.plc-switch-editor { padding-left: 0; padding-right: 0; }
+.plc-switch-editor > .plc-switch-field,
+.plc-switch-editor > .plc-editor-actions,
+.plc-switch-editor > .plc-operation-hint,
+.plc-switch-editor > .plc-backup-actions,
+.plc-switch-editor > .plc-storage-path { margin-left: var(--plc-prompt-start, 90px); margin-right: 12px; }
+.plc-operation-list { gap: 8px; }
+.plc-operation { border: 0; padding: 0 12px 0 8px; border-radius: 0; grid-template-columns: calc(var(--plc-prompt-start, 90px) - 8px) minmax(0, 1fr) 76px 28px 24px; gap: 0; align-items: end; }
+.plc-operation > .plc-switch-field:last-child { grid-column: auto; }
+.plc-operation > .plc-switch-field:first-child { padding-right: 12px; }
+.plc-operation .plc-switch-field { font-size: 11px; }
+.plc-operation > button { height: 32px; padding: 3px !important; margin-left: 4px; }
+.plc-operation .plc-switch-input { height: 32px; }
+.plc-operation > button.plc-operation-state[data-state="disable"] { opacity: .65; }
+.plc-operation > button.plc-operation-state[data-state="enable"] { color: var(--plc-accent); }
+.plc-operation-add { margin-left: var(--plc-prompt-start, 90px); }
+.plc-operation-list:not(:empty) + .plc-operation-add { display: none; }
+
+.plc-range-controls { display: flex; align-items: end; gap: 8px; }
+.plc-range-controls .plc-switch-field { max-width: 180px; }
+.plc-range-controls button { height: 32px; }
+
+/* Preset rows mirror the prompt axes, in a distinct editing section. */
+.plc-switch-editor { background: rgba(128, 114, 180, .055); border-block: 1px solid var(--border-color-primary, #9994); }
+.plc-editor-heading { margin: 0 12px 0 var(--plc-prompt-start, 90px); font-size: 12px; font-weight: 600; color: var(--plc-muted); }
+.plc-operation { position: relative; grid-template-columns: var(--plc-prompt-start, 90px) minmax(0, 1fr) 28px 24px; padding: 6px 12px 6px 0; align-items: start; }
+.plc-operation > .plc-switch-field:first-child { position: absolute; left: calc(var(--plc-gutter-left, 0px) + 6px); top: 6px; width: var(--plc-number-width, 27px); padding: 0; }
+.plc-operation > .plc-switch-field > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.plc-operation > .plc-switch-field:first-child input { appearance: textfield; border: 0; border-radius: 3px; padding: 0; height: var(--plc-prompt-line-height, 24px); background: transparent; color: var(--plc-muted); font: 11px/var(--plc-prompt-line-height, 24px) ui-monospace, monospace; text-align: left; }
+.plc-operation input::-webkit-inner-spin-button, .plc-operation input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.plc-operation > .plc-switch-field:not(:first-child) { grid-column: 2; }
+.plc-operation textarea.plc-switch-input { min-height: var(--plc-prompt-line-height, 24px); height: auto; max-height: none; resize: none; overflow: hidden; border: 0; border-radius: 3px; padding: 0; background: transparent; color: var(--plc-foreground); font-family: var(--plc-prompt-font, inherit); font-size: var(--plc-prompt-size, 14px); line-height: var(--plc-prompt-line-height, 24px); white-space: pre-wrap; overflow-wrap: break-word; box-shadow: inset 0 -1px var(--plc-off-border); }
+.plc-operation > button.plc-operation-state { position: absolute; left: calc(var(--plc-gutter-left, 0px) + var(--plc-number-width, 27px) + 12px); top: calc(6px + (var(--plc-prompt-line-height, 24px) - 18px) / 2); width: 32px; height: 18px; min-height: 18px; padding: 0 !important; margin: 0; border: 1px solid var(--plc-off-border); border-radius: 999px; background: var(--plc-off-track); opacity: 1; }
+.plc-operation-state::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #a4aab4; }
+.plc-operation > button.plc-operation-state[data-state="enable"] { border-color: #8f73e7; background: linear-gradient(100deg, #7454ce, #9674ef); }
+.plc-operation-state[data-state="enable"]::after { transform: translateX(14px); background: #faf9ff; }
+.plc-operation-state:hover { filter: brightness(1.12); }
+.plc-operation > button.plc-operation-plus, .plc-operation > button.plc-operation-remove { align-self: start; height: var(--plc-prompt-line-height, 24px); }
+/* Compact preset controls, separate from the native prompt header/counter. */
+.plc-presets { margin-top: 8px; margin-bottom: 8px; }
+.plc-preset-track { padding-top: 2px; padding-bottom: 2px; }
+.plc-preset-toolbar { box-sizing:border-box; min-height:43px; border-bottom:1px solid var(--border-color-primary, rgba(111, 126, 150, .24)); display:flex; align-items:center; flex-wrap:nowrap; gap:8px; min-width:0; padding:6px 100px 6px 12px; overflow-x:auto; white-space:nowrap; scrollbar-width:thin; }
+.plc-preset-toolbar > button { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid var(--border-color-primary,#9995); border-radius:7px; color:var(--body-text-color,inherit); background:transparent; cursor:pointer; }
+.plc-preset-toolbar .plc-divider { flex:0 0 1px; height:20px; }
+.plc-preset-toolbar .plc-storage-path { flex:0 1 auto; min-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
+.plc-name-row { display:flex; align-items:end; gap:10px; margin-left:var(--plc-prompt-start,90px); margin-right:12px; }
+.plc-name-row > .plc-switch-field { flex:0 1 240px; }
+.plc-name-row .plc-editor-actions { display:flex; flex:0 0 auto; gap:8px; margin:0; }
+.plc-range-controls { margin-left:var(--plc-prompt-start,90px); margin-right:12px; }
+.plc-operation > button.plc-operation-state { top:50%; transform:translateY(-50%); }
+.plc-operation > .plc-switch-field:first-child { top:50%; transform:translateY(-50%); }
+.plc-presets { max-width:calc(100% - 112px); }
+.plc-header { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
+.plc-header .plc-actions { flex-wrap:nowrap; flex:0 0 auto; }
+.plc-header > .plc-hint { white-space:nowrap; overflow-wrap:normal; }
+/* Bring numbers toward the switches without shifting either prompt column. */
+.plc-line-number { left:18px; width:calc(var(--plc-number-width,27px) - 12px); }
+.plc-operation > .plc-switch-field:first-child { left:calc(var(--plc-gutter-left,0px) + 6px); width:calc(var(--plc-number-width,27px) - 6px); }
+.plc-operation > .plc-switch-field:first-child input { text-align:center; }
+
+.plc-range-controls input::placeholder { color:var(--plc-muted); opacity:.8; }
+
+.plc-preset-toolbar { padding-left:var(--plc-action-start,66px); }
+.plc-presets { margin-left:var(--plc-action-start,66px); max-width:calc(100% - var(--plc-action-start,66px) - 100px); }
+.plc-name-row > .plc-switch-field,
+.plc-range-controls > .plc-switch-field { flex:0 1 210px; width:210px; max-width:210px; }
+
+.plc-operation[data-state="disable"] textarea.plc-switch-input { color:var(--plc-muted); text-decoration:line-through; text-decoration-thickness:1px; text-decoration-color:var(--plc-muted); text-decoration-skip-ink:none; }
+.plc-operation[data-state="disable"] { background:var(--plc-row-fill); border-radius:7px; }
+
+.plc-preset-toolbar .plc-edit-hint { flex:0 0 auto; margin-left:4px; color:var(--plc-muted); font-size:11px; line-height:1.4; white-space:nowrap; }
+
+/* One number-column geometry for the preset editor and the live prompt. */
+.plc-line-number { left:12px; width:calc(var(--plc-number-width,27px) - 8px); text-align:center; }
+.plc-operation > .plc-switch-field:first-child { left:calc(var(--plc-gutter-left,0px) + 12px); width:calc(var(--plc-number-width,27px) - 8px); }
+.plc-operation > .plc-switch-field:first-child input { text-align:center; }
+.plc-operation { grid-template-columns:var(--plc-prompt-start,90px) minmax(0,1fr) 44px 44px; }
+.plc-operation > button.plc-operation-plus,
+.plc-operation > button.plc-operation-remove { display:flex; align-items:center; justify-content:center; align-self:center; box-sizing:border-box; width:36px; min-width:36px; height:var(--plc-prompt-line-height,24px); min-height:0; padding:0 !important; margin-left:8px; font-size:18px; line-height:1; }
+
+/* Use the available width: name/actions and range capture share one row. */
+.plc-registration-row { display:flex; align-items:end; flex-wrap:nowrap; gap:24px; margin-left:var(--plc-prompt-start,90px); margin-right:12px; padding-bottom:2px; min-width:0; overflow-x:auto; scrollbar-width:thin; }
+.plc-registration-row > .plc-name-row,
+.plc-registration-row > .plc-range-controls { margin:0; flex:0 0 auto; }
+.plc-registration-row .plc-switch-field { flex:0 0 210px; min-width:210px; }
+.plc-registration-row button { flex-shrink:0; white-space:nowrap; }
+
+/* Leave room for native focus outlines inside the horizontal scroller.
+   Offset the scroller itself so the input/text axes remain unchanged. */
+.plc-registration-row { padding:6px; margin-left:calc(var(--plc-prompt-start,90px) - 6px); margin-right:6px; margin-top:-6px; margin-bottom:-4px; }
+
+.plc-editor-heading-row { display:flex; align-items:center; flex-wrap:nowrap; gap:16px; margin-left:var(--plc-prompt-start,90px); margin-right:12px; min-width:0; overflow-x:auto; white-space:nowrap; scrollbar-width:thin; }
+.plc-editor-heading-row > .plc-editor-heading,
+.plc-editor-heading-row > .plc-operation-hint { margin:0; flex:0 0 auto; }
+
+/* Match the native action row's brand and divider without shifting Register. */
+.plc-preset-toolbar { padding-left:calc(var(--plc-control-axis,29px) - 14px); }
+.plc-toolbar-branding { display:flex; align-items:center; flex:0 0 calc(var(--plc-action-start,66px) - var(--plc-control-axis,29px) + 14px); margin-right:-8px; }
+
+.plc-editor-heading-row { gap:32px; }
+.plc-editor-heading-row > .plc-operation-hint { display:flex; align-items:center; gap:20px; font-size:11px; color:var(--plc-muted); opacity:1; }
+
+.plc-operation-legend { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; }
+.plc-state-label { display:inline-flex; align-items:center; justify-content:center; padding:1px 5px; border:1px solid var(--plc-off-border); border-radius:4px; background:var(--plc-row-fill); color:var(--plc-muted); font-size:10px; line-height:1.4; font-weight:500; }
+
+.plc-operation.plc-operation-invalid { background:rgba(198,81,96,.08); }
+.plc-operation-error { grid-column:2 / -1; margin-top:5px; color:#bd3547; font-size:11px; line-height:1.5; }
+.plc-operation-error[hidden] { display:none !important; }
+.plc-component[data-plc-theme="dark"] .plc-operation-error { color:#f0a5ae; }

@@ -1,7 +1,7 @@
-/* Prompt Lines 1.2.4. Original textareas and host parsing stay intact. */
+/* Prompt Lines 1.4.0. Original textareas and host parsing stay intact. */
 (() => {
     'use strict';
-    const API_VERSION = '1.2.4';
+    const API_VERSION = '1.4.12';
     // Match Python's Unicode whitespace, excluding LF (the physical line separator).
     const SPACE = '[\\t \\r\\f\\v\\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
     const blank = text => new RegExp(`^(?:${SPACE}|\\n)*$`).test(text);
@@ -328,9 +328,112 @@
     function mapEdits(position, edits) {
         return [...edits].sort((a, b) => b.start - a.start).reduce(mapPosition, position);
     }
+    // Physical Enter-separated lines, not visual word wrapping.
+    function switchText(row, replacement, config) {
+        if (typeof replacement !== 'string' || /[\r\n]/.test(replacement)) return null;
+        const syntax = syntaxOf(config);
+        if (!row || row.blocked) return null;
+        if (row.off && syntax.marker) {
+            const prefix = row.comment ? row.text.slice(0, row.comment.at - row.start) + row.comment.marker : syntax.marker;
+            return prefix + replacement;
+        }
+        return replacement;
+    }
+    function rowBody(row) {
+        return row.comment && row.off ? row.text.slice(0, row.comment.at - row.start) + row.text.slice(row.comment.at - row.start + row.comment.marker.length) : row.text;
+    }
+    function captureRows(value, selection, config) {
+        const rows = linesOf(value, config), selected = new Set();
+        for (const part of selection.split(/[,，、]/)) {
+            const match = /^\s*(\d+)\s*(?:[-~〜～–]\s*(\d+)\s*)?$/.exec(part);
+            const start = match && Number(match[1]), end = match && Number(match[2] || match[1]);
+            if (!match || start < 1 || end < start || end > rows.length || end - start > 999) return {error: '現在の行番号・範囲を入力してください（例：1-3,5-6）。'};
+            for (let line = start; line <= end; line++) selected.add(line);
+            if (selected.size > 1000) return {error: '一度に反映できるのは1000行までです。'};
+        }
+        const operations = [];
+        for (const line of [...selected].sort((a,b) => a-b)) {
+            const row = rows[line - 1];
+            if (row.blocked) return {error: `${line}行目は複数行コメントの一部のため登録できません。`};
+            operations.push({line, mode:'replace', original:row.text, text:rowBody(row), state:row.off ? 'disable' : 'enable'});
+        }
+        return {operations};
+    }
+    function presetOperations(preset) {
+        return Array.isArray(preset.operations) ? preset.operations :
+            [{line: preset.line, mode: 'replace', original: preset.original, text: preset.text}];
+    }
+    function validPresets(data) {
+        if (!Array.isArray(data)) return [];
+        const ids = new Set();
+        return data.flatMap(p => {
+            if (!p || typeof p.id !== 'string' || !p.id || ids.has(p.id) || typeof p.name !== 'string' || !p.name.trim()) return [];
+            const operations = presetOperations(p), lines = new Set();
+            if (!operations.length || operations.some(op => !op || !Number.isSafeInteger(op.line) || op.line < 1 ||
+                lines.has(op.line) || !lines.add(op.line) || !['replace', 'disable', 'enable'].includes(op.mode) || (op.state !== undefined && !['keep', 'enable', 'disable'].includes(op.state)) ||
+                typeof op.original !== 'string' || /[\r\n]/.test(op.original) ||
+                (op.mode === 'replace' && (typeof op.text !== 'string' || /[\r\n]/.test(op.text))))) return [];
+            ids.add(p.id);
+            return [{id: p.id, name: p.name.trim().slice(0, 80), operations: operations.map(op =>
+                ({line: op.line, mode: op.mode, original: op.original, ...(op.mode === 'replace' ? {text: op.text, ...(op.state && op.state !== 'keep' ? {state: op.state} : {})} : {})}))}];
+        });
+    }
+    function switchPlan(value, preset, peers, config) {
+        const rows = linesOf(value, config), syntax = syntaxOf(config), edits = [], changes = [], seen = new Set();
+        if (!syntax.marker) return {error:'行の無効化機能を確認できません。読み込み完了を待ってください。'};
+        for (const op of presetOperations(preset)) {
+            if (!Number.isSafeInteger(op.line) || op.line < 1 || seen.has(op.line)) return {error:`${op.line}行目が不正または重複しています。`};
+            seen.add(op.line);
+            const row = rows[op.line - 1];
+            if (!row) return {error:`${op.line}行目がありません。`};
+            if (row.blocked) return {error:`${op.line}行目は複数行コメントの一部のため変更できません。`};
+            if (typeof op.text !== 'string' || !op.text.trim() || /[\r\n]/.test(op.text)) return {error:`${op.line}行目のプロンプトを空欄・改行なしで入力してください。`};
+            const state = op.state;
+            if (!['enable','disable'].includes(state)) return {error:`${op.line}行目の有効・無効を選び、プリセットを保存し直してください。`};
+            let text;
+            if (state === 'disable') {
+                if (rowBody(row) !== op.text) return {error:`${op.line}行目の内容が一致しないため無効化できません。\n現在：${rowBody(row)}\n登録：${op.text}`};
+                text = row.off ? row.text : syntax.marker + row.text;
+            } else {
+                text = op.text;
+                const target = linesOf(text, syntax)[0];
+                // Never silently unmute inline tags while enabling a replacement.
+                if (target.blocked || target.off) return {error:`${op.line}行目は有効なプロンプト本文を入力してください（行全体のコメントは除いてください）。`};
+            }
+            changes.push({line:op.line,current:row.text,text,confirm:false});
+            if (text !== row.text) edits.push({start:row.start,end:row.start+row.text.length,text});
+        }
+        return {edits,changes,confirm:false};
+    }
+
+    function editorIssues(value, operations, config) {
+        const rows = linesOf(value, config), counts = new Map();
+        operations.forEach(op => counts.set(op.line, (counts.get(op.line) || 0) + 1));
+        return operations.flatMap((op, index) => {
+            let message = '';
+            if (counts.get(op.line) > 1) message = '行番号が重複しています。';
+            else {
+                const result = switchPlan(value, {operations:[op]}, [], config);
+                if (result.error) {
+                    const row = rows[op.line - 1];
+                    message = op.state === 'disable' && row && !row.blocked && typeof op.text === 'string' && op.text.trim() && !/[\r\n]/.test(op.text) && rowBody(row) !== op.text
+                        ? op.line + '行を無効にする場合は、元の内容との一致が必要です。'
+                         : !syntaxOf(config).marker ? '無効化機能が未準備です。'
+                        : !Number.isSafeInteger(op.line) || op.line < 1 || !row ? '行番号が不正、または行が存在しません。'
+                        : row.blocked ? '複数行コメントの途中です。'
+                        : typeof op.text !== 'string' || !op.text.trim() ? 'プロンプトが空欄です。'
+                        : /[\r\n]/.test(op.text) ? 'プロンプトに改行が含まれています。'
+                        : !['enable','disable'].includes(op.state) ? '有効・無効が未指定です。'
+                        : '行全体がコメントアウトされています。';
+                }
+            }
+            return message ? [{index, line:op.line, message}] : [];
+        });
+    }
+
     // Pure functions are exported only to the Node test runner, never as WebUI globals.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
+        module.exports = {editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
         return;
     }
     if (window.__promptLinesLoaded) return;
@@ -341,6 +444,30 @@
     ];
     const controllers = new Map();
     const root = () => typeof gradioApp === 'function' ? gradioApp() : document;
+    let storeQueue = Promise.resolve();
+    function storeRequest(action, scope, payload = {}) {
+        const run = () => new Promise((resolve, reject) => {
+            const id = `${Date.now()}-${Math.random()}`, started = Date.now(); let sent = false;
+            const timer = setInterval(() => {
+                const input = root().querySelector('#plc-store-input textarea, #plc-store-input input');
+                const output = root().querySelector('#plc-store-output textarea, #plc-store-output input');
+                const host = root().querySelector('#plc-store-submit');
+                const button = host && (host.matches('button') ? host : host.querySelector('button'));
+                if (!sent && input && output && button) {
+                    const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, JSON.stringify({id, action, scope, ...payload}));
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    sent = true; setTimeout(() => button.click(), 0);
+                }
+                if (sent && output) {
+                    try { const result = JSON.parse(output.value); if (result.id === id) { clearInterval(timer); resolve(result); return; } } catch (_) {}
+                }
+                if (Date.now() - started > 15000) { clearInterval(timer); reject(new Error('設定の保存先に接続できません。WebUIを再起動してください。')); }
+            }, 50);
+        });
+        const result = storeQueue.then(run, run); storeQueue = result.catch(() => {}); return result;
+    }
+
     function capability() {
         const nodes = root().querySelectorAll('[data-plc-capability]');
         let data;
@@ -362,7 +489,7 @@
             caret: ta.style.getPropertyValue('caret-color'), caretPriority: ta.style.getPropertyPriority('caret-color')
         };
         const basePadding = parseFloat(getComputedStyle(ta).paddingLeft) || 0;
-        const gutterWidth = 48;
+        let gutterWidth = 74;
         if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
         component.classList.add('plc-component');
         ta.classList.add('plc-input');
@@ -376,7 +503,7 @@
         header.setAttribute('role', 'group');
         header.setAttribute('aria-label', 'Prompt Lines');
         const brand = make('span', 'plc-brand', '//');
-        brand.title = 'Prompt Lines 1.2.4 · Alt＋クリックでカンマ区切りのタグを切替';
+        brand.title = `Prompt Lines ${API_VERSION} · Alt＋クリックでカンマ区切りのタグを切替`;
         brand.setAttribute('aria-hidden', 'true');
         const divider = make('span', 'plc-divider');
         divider.setAttribute('aria-hidden', 'true');
@@ -403,7 +530,7 @@
         component.append(status);
         const controls = [];
         let lastValue = null, lastCap = '', lastSyntax = '', lastWidth = -1, lastHeight = -1, lastTheme = '';
-        let rows = [], boxes = [], spans = [], visibleSpans = [], composing = false, raf = 0;
+        let rows = [], boxes = [], numbers = [], spans = [], visibleSpans = [], composing = false, raf = 0;
         let destroyed = false;
         const listeners = [];
         const listen = (target, name, fn, options) => {
@@ -577,6 +704,282 @@
         listen(ta, 'click', event => {
             if (suppressAltClick) { suppressAltClick = false; consume(event); }
         }, true);
+        const storageKey = `prompt-lines:switches:v1:${component.id}`;
+        const presetStrip = make('div', 'plc-presets');
+        presetStrip.setAttribute('aria-label', '登録済みの切替');
+        const presetTrack = make('div', 'plc-preset-track');
+        presetStrip.append(presetTrack);
+        component.insertBefore(presetStrip, header);
+        const notice = make('div', 'plc-switch-notice');
+        notice.setAttribute('role', 'status'); notice.hidden = true;
+        header.after(notice);
+        const editor = make('div', 'plc-switch-editor');
+        editor.hidden = true;
+        editor.setAttribute('aria-label', 'プリセット編集');
+        const editorHeadingRow = make('div', 'plc-editor-heading-row');
+        editorHeadingRow.append(make('div', 'plc-editor-heading', 'プリセット編集')); editor.append(editorHeadingRow);
+        header.after(editor);
+        const switchButton = make('button', 'plc-action');
+        switchButton.type = 'button'; switchButton.setAttribute('aria-expanded', 'false');
+        const switchGlyph = make('span', 'plc-action-icon plc-preset-icon');
+        switchGlyph.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-9M18 2v8M14 6h8M8 12h4M8 16h8"/></svg>'; switchGlyph.setAttribute('aria-hidden', 'true');
+        switchButton.append(switchGlyph, document.createTextNode('登録'));
+        actions.append(switchButton);
+        let presets = [], editingId = null, layoutWidth = -1;
+        function showNotice(message) { notice.textContent = message; notice.hidden = !message; }
+        function field(parent, label, tag, type) {
+            const wrapper = make('label', 'plc-switch-field');
+            const input = make(tag, 'plc-switch-input');
+            if (type) input.type = type;
+            wrapper.append(make('span', '', label), input); parent.append(wrapper); return input;
+        }
+        const nameInput = field(editor, 'ボタン名', 'input', 'text'); nameInput.maxLength = 80;
+        const rangeControls = make('div', 'plc-range-controls');
+        const rangeInput = field(rangeControls, 'まとめて登録', 'input', 'text'); rangeInput.placeholder = '例：1-5 / 1-2,4-5';
+        const rangeButton = make('button', '', '反映'); rangeButton.type = 'button'; rangeControls.append(rangeButton); editor.append(rangeControls);
+        const operationList = make('div', 'plc-operation-list'); editor.append(operationList);
+        let operationInputs = [], validationShown = false;
+        function addOperation(op = {}) {
+            const container = make('div', 'plc-operation');
+            const line = field(container, '行番号', 'input', 'number'); line.min = '1'; line.step = '1'; line.value = op.line || '';
+            const text = field(container, '置換内容', 'textarea'); text.rows = 1; text.value = op.text || ''; text.placeholder = 'プロンプト';
+            text.setAttribute('aria-label', '置換内容'); line.setAttribute('aria-label', '行番号');
+            text.addEventListener('input', schedule);
+            text.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) event.preventDefault(); });
+            const state = make('button', 'plc-operation-state'); state.type = 'button';
+            // Legacy 'keep' remains unchanged in saved data until the user saves this editor.
+            const storedState = op.mode === 'replace' ? op.state : op.mode;
+            const currentRow = linesOf(ta.value, capability())[Number(op.line) - 1];
+            let stateValue = ['enable', 'disable'].includes(storedState) ? storedState : currentRow && currentRow.off ? 'disable' : 'enable';
+            function updateState() {
+                state.dataset.state = stateValue; container.dataset.state = stateValue;
+                const label = stateValue === 'enable' ? '有効' : '無効';
+                state.textContent = ''; state.title = `${label}：クリックで有効・無効を切替`;
+                state.setAttribute('aria-label', `行の状態：${label}`);
+                state.setAttribute('role', 'switch'); state.setAttribute('aria-checked', String(stateValue === 'enable'));
+            }
+            state.addEventListener('click', () => { stateValue = stateValue === 'enable' ? 'disable' : 'enable'; updateState(); });
+            updateState();
+            const add = make('button', 'plc-operation-plus'); add.type = 'button'; add.setAttribute('aria-label', '対象行を追加');
+            const remove = make('button', 'plc-operation-remove'); remove.type = 'button'; remove.setAttribute('aria-label', 'この操作を削除');
+            add.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+            remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+            container.insertBefore(state, text.parentElement); container.append(add, remove);
+            add.addEventListener('click', () => addOperation().line.focus());
+            const error = make('small', 'plc-operation-error'); error.id = 'plc-error-' + newPresetId(); error.hidden = true; container.append(error);
+            const inputs = {container, line, text, error, state: () => stateValue, source: op}; operationInputs.push(inputs);
+            let committedLine = String(op.line || '');
+            line.addEventListener('change', () => {
+                if (line.value === committedLine) return;
+                if (operationInputs.some(item => item !== inputs && Number(item.line.value) === Number(line.value))) {
+                    showNotice(`${line.value}行目は登録済みです。`); line.value = committedLine; return;
+                }
+                const captured = captureRows(ta.value, line.value, capability());
+                if (captured.error) { showNotice(captured.error); return; }
+                const capturedRow = captured.operations[0];
+                if (text.value && text.value !== (inputs.source.text || '') && !window.confirm('編集中の置換内容を、指定行の内容で入れ替えますか？')) { line.value = committedLine; return; }
+                committedLine = line.value; text.value = capturedRow.text; stateValue = capturedRow.state; inputs.source = capturedRow; updateState(); showNotice(''); schedule();
+            });
+            remove.addEventListener('click', () => { container.remove(); operationInputs = operationInputs.filter(item => item !== inputs); schedule(); });
+            operationList.append(container); schedule(); return inputs;
+        }
+        const addButton = make('button', 'plc-operation-add', '＋ 行を追加'); addButton.type = 'button'; editor.append(addButton);
+        const operationHint = make('small', 'plc-operation-hint');
+        for (const [label, description] of [['有効', '置換'], ['無効', '一致を確認して無効化']]) {
+            const item = make('span', 'plc-operation-legend');
+            item.append(make('span', 'plc-state-label', label), make('span', '', description)); operationHint.append(item);
+        }
+        editorHeadingRow.append(operationHint);
+        const editorActions = make('div', 'plc-editor-actions');
+        const saveButton = make('button', 'plc-editor-save', '保存'); saveButton.type = 'button';
+        const deleteButton = make('button', 'plc-editor-delete', '削除'); deleteButton.type = 'button';
+        editorActions.append(saveButton, deleteButton); editor.append(editorActions);
+        const importButton = make('button', 'plc-action plc-import-action', 'JSON読み込み'); importButton.type = 'button';
+        const importGlyph = make('span', 'plc-action-icon plc-preset-icon');
+        importGlyph.setAttribute('aria-hidden', 'true');
+        importGlyph.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg>';
+        importButton.prepend(importGlyph);
+        const editHint = make('small', 'plc-edit-hint', '登録済みボタンを右クリックで編集');
+        const importFile = make('input', 'plc-import-file'); importFile.type = 'file'; importFile.accept = '.json,application/json'; importFile.hidden = true;
+        const presetToolbar = make('div', 'plc-preset-toolbar');
+        const presetDivider = make('span', 'plc-divider'); presetDivider.setAttribute('aria-hidden','true');
+        const storagePath = make('small', 'plc-storage-path', '保存先を確認中…');
+        presetToolbar.append(switchButton, editHint, presetDivider, importButton, importFile, storagePath);
+        const toolbarBranding = make('div', 'plc-toolbar-branding');
+        toolbarBranding.setAttribute('aria-hidden', 'true');
+        toolbarBranding.append(brand.cloneNode(true), divider.cloneNode(true)); presetToolbar.prepend(toolbarBranding);
+        header.before(presetToolbar);
+        presetToolbar.after(editor); editor.after(notice);
+        const nameRow = make('div', 'plc-name-row');
+        nameInput.parentElement.before(nameRow); nameRow.append(nameInput.parentElement, editorActions);
+        const registrationRow = make('div', 'plc-registration-row');
+        nameRow.before(registrationRow); registrationRow.append(nameRow, rangeControls);
+        function closeEditor() { editor.hidden = true; switchButton.setAttribute('aria-expanded', 'false'); schedule(); }
+        function openEditor(preset) {
+            editingId = preset ? preset.id : null; validationShown = false;
+            nameInput.value = preset ? preset.name : '';
+            operationList.replaceChildren(); operationInputs = [];
+            const initial = captureRows(ta.value, '1', capability());
+            for (const op of preset ? preset.operations : (initial.operations || [{}])) addOperation(op);
+            deleteButton.hidden = !preset;
+            editor.hidden = false; switchButton.setAttribute('aria-expanded', 'true');
+            showNotice(''); if (!serverReady) loadStore();
+            operationInputs[0].line.focus({preventScroll: true}); schedule();
+        }
+        let serverReady = false, serverRevision = 0, storeBusy = false, initialized = false;
+        async function loadStore() {
+            try {
+                const result = await storeRequest('read', component.id);
+                if (!result.ok) throw new Error(result.error);
+                const loaded = validPresets(result.presets);
+                if (loaded.length !== result.presets.length) throw new Error('保存済みの設定を読み取れません。元のファイルは変更していません。');
+                presets = loaded; serverRevision = result.revision; serverReady = true;
+                storagePath.textContent = /[A-Za-z]:[\\/]/.test(result.path) ? '保存先：%LOCALAPPDATA%\\PromptLines' : `保存先：${result.path.replace(/[\\/]presets\.json$/, '')}`; storagePath.title = result.path;
+                renderPresets();
+                initialized = true;
+            } catch (error) { serverReady = false; showNotice(error.message || '設定を読み込めませんでした。'); }
+            schedule();
+        }
+        async function persist(next) {
+            if (!serverReady || storeBusy) { showNotice('設定の読み書きが完了するまでお待ちください。'); return false; }
+            storeBusy = true; saveButton.disabled = deleteButton.disabled = true;
+            try {
+                let result = await storeRequest('write', component.id, {revision: serverRevision, presets: next});
+                // A concurrent write to another prompt scope does not invalidate this one.
+                if (result.conflict && JSON.stringify(result.presets) === JSON.stringify(presets)) {
+                    result = await storeRequest('write', component.id, {revision: result.revision, presets: next});
+                }
+                if (!result.ok) {
+                    if (result.conflict) { presets = validPresets(result.presets); serverRevision = result.revision; renderPresets(); }
+                    throw new Error(result.error);
+                }
+                presets = validPresets(result.presets); serverRevision = result.revision; renderPresets(); return true;
+            } catch (error) { showNotice(error.message || '設定を保存できませんでした。'); return false; }
+            finally { storeBusy = false; saveButton.disabled = deleteButton.disabled = false; schedule(); }
+        }
+        function layoutPresets() {
+            if (presetStrip.hidden || !presetStrip.clientWidth) return;
+            const width = presetStrip.clientWidth;
+            if (width === layoutWidth) return;
+            layoutWidth = width;
+            const buttons = Array.from(presetTrack.children);
+            const widths = buttons.map(button => button.getBoundingClientRect().width);
+            const needed = widths.reduce((sum, w) => sum + w, 0) + Math.max(0, widths.length - 1) * 8;
+            presetTrack.style.width = '';
+            if (needed <= width) return;
+            const fits = limit => {
+                let rows = 1, used = 0;
+                for (const w of widths) {
+                    if (used && used + 8 + w > limit + 0.1) { rows++; used = w; }
+                    else used += (used ? 8 : 0) + w;
+                }
+                return rows <= 2;
+            };
+            let low = Math.max(width, ...widths), high = Math.max(low, needed);
+            for (let i = 0; i < 20; i++) { const mid = (low + high) / 2; if (fits(mid)) high = mid; else low = mid; }
+            presetTrack.style.width = `${Math.ceil(high + 1)}px`;
+        }
+        function renderPresets() {
+            const scroll = presetStrip.scrollLeft;
+            presetTrack.replaceChildren();
+            presetStrip.hidden = !presets.length;
+            for (const preset of presets) {
+                const button = make('button', 'plc-preset', preset.name); button.type = 'button';
+                button.title = preset.operations.map(op => `${op.line}行目：${op.mode === 'disable' ? '無効化' : op.mode === 'enable' ? '有効化' : op.text}`).join('\n') + '\n右クリックまたは Shift＋クリックで編集';
+                button.addEventListener('click', event => {
+                    if (event.shiftKey) { openEditor(preset); return; }
+                    if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
+                    const value = ta.value;
+                    const plan = switchPlan(value, preset, presets, capability());
+                    if (plan.error) { openEditor(preset); showNotice(plan.error + '\n全行未反映です。'); return; }
+                    if (plan.confirm && !window.confirm('次の行の内容が変わっています。まとめて変更しますか？\n\n' + plan.changes.filter(change => change.confirm).map(change => `${change.line}行目\n現在：${change.current}\n変更後：${change.text}`).join('\n\n'))) return;
+                    if (ta.value !== value) { showNotice('内容が更新されました。もう一度切替を押してください。'); return; }
+                    showNotice('');
+                    if (plan.edits.length) apply(plan.edits, button, event);
+                });
+                button.addEventListener('contextmenu', event => { event.preventDefault(); openEditor(preset); });
+                presetTrack.append(button);
+            }
+            layoutWidth = -1; layoutPresets(); presetStrip.scrollLeft = scroll; schedule();
+        }
+        listen(switchButton, 'click', () => editor.hidden ? openEditor(null) : closeEditor());
+        listen(editor, 'keydown', event => {
+            if (event.key === 'Escape') { event.stopPropagation(); closeEditor(); switchButton.focus(); }
+        });
+        listen(addButton, 'click', () => addOperation().line.focus());
+        listen(rangeButton, 'click', () => {
+            const captured = captureRows(ta.value, rangeInput.value, capability());
+            if (captured.error) { showNotice(captured.error); return; }
+            const used = new Set(operationInputs.map(item => Number(item.line.value)));
+            for (const op of captured.operations) if (!used.has(op.line)) { addOperation(op); used.add(op.line); }
+            showNotice(''); schedule();
+        });
+        function validateEditor() {
+            const rows = linesOf(ta.value, capability());
+            const operations = operationInputs.map(inputs => {
+                const line = Number(inputs.line.value), row = rows[line - 1];
+                return {line, mode:'replace', text:inputs.text.value, state:inputs.state(),
+                    original:inputs.source.line === line && typeof inputs.source.original === 'string' ? inputs.source.original : row ? row.text : ''};
+            });
+            const issues = editorIssues(ta.value, operations, capability());
+            operationInputs.forEach((inputs,index) => {
+                const issue = issues.find(item => item.index === index);
+                inputs.container.classList.toggle('plc-operation-invalid', Boolean(issue));
+                inputs.error.textContent = issue ? issue.message : ''; inputs.error.hidden = !issue;
+                for (const control of [inputs.line, inputs.text]) {
+                    if (issue) { control.setAttribute('aria-invalid','true'); control.setAttribute('aria-describedby',inputs.error.id); }
+                    else { control.removeAttribute('aria-invalid'); control.removeAttribute('aria-describedby'); }
+                }
+            });
+            showNotice(issues.length ? '強調した行にエラーがあります。' : '');
+            return {operations, issues};
+        }
+        for (const type of ['input','change','click']) listen(editor, type, event => {
+            if (event.type === 'click' && event.target.closest('button') === saveButton) return;
+            if (validationShown && !editor.hidden) validateEditor();
+        });
+        listen(saveButton, 'click', async () => {
+            if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
+            const name = nameInput.value.trim();
+            if (!name) { showNotice('ボタン名が未入力です。'); nameInput.focus(); return; }
+            if (!operationInputs.length) { showNotice('操作する行を追加してください。'); return; }
+            validationShown = true;
+            const {operations, issues} = validateEditor();
+            if (issues.length) {
+                operationInputs[issues[0].index].text.focus();
+                return;
+            }
+            const old = presets.find(p => p.id === editingId);
+            const next = {id: editingId || newPresetId(), name, operations};
+            if (await persist(old ? presets.map(p => p.id === old.id ? next : p) : [...presets, next])) { closeEditor(); showNotice(''); }
+        });
+        function newPresetId() { return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
+        listen(importButton, 'click', () => importFile.click());
+        listen(importFile, 'change', async () => {
+            const file = importFile.files[0]; importFile.value = ''; if (!file) return;
+            try {
+                const parsed = JSON.parse(await file.text()), raw = Array.isArray(parsed) ? parsed : parsed.presets;
+                const incoming = validPresets(raw);
+                if (!Array.isArray(raw) || !raw.length || incoming.length !== raw.length) throw new Error();
+                // Existing entries are never overwritten. Re-importing an identical entry is a no-op.
+                const next = [...presets]; let added = 0;
+                for (const item of incoming) {
+                    if (next.some(p => p.name === item.name && JSON.stringify(p.operations) === JSON.stringify(item.operations))) continue;
+                    next.push({...item, id: next.some(p => p.id === item.id) ? newPresetId() : item.id}); added++;
+                }
+                if (await persist(next)) showNotice(`${added}件を追加しました。`);
+            } catch (_) { showNotice('切替のJSONを読み込めませんでした。保存済みの設定は変更していません。'); }
+        });
+        listen(deleteButton, 'click', async () => {
+            const item = presets.find(p => p.id === editingId);
+            if (item && window.confirm(`「${item.name}」を削除しますか？`) && await persist(presets.filter(p => p.id !== item.id))) {
+                closeEditor(); showNotice('');
+            }
+        });
+        listen(window, 'focus', () => { if (!storeBusy && (editor.hidden || !serverReady)) loadStore(); });
+        renderPresets();
+        loadStore();
+
         for (const [mode, icon, label] of [['enable', '✓', '全有効'], ['disable', '−', '全無効'], ['invert', '⇄', '反転']]) {
             const button = make('button', 'plc-action');
             button.type = 'button'; button.dataset.mode = mode;
@@ -590,6 +993,14 @@
         function render() {
             if (destroyed || !ta.isConnected) return;
             const cap = capability();
+            switchButton.disabled = !serverReady || storeBusy || !cap.marker || composing || ta.disabled || ta.readOnly;
+            presetStrip.querySelectorAll('button').forEach(button => { button.disabled = switchButton.disabled; });
+            const firstAction = actions.querySelector('button');
+            if (firstAction && firstAction.getClientRects().length) {
+                const inset = Math.max(12, firstAction.getBoundingClientRect().left - component.getBoundingClientRect().left - component.clientLeft + header.scrollLeft);
+                component.style.setProperty('--plc-action-start', `${inset}px`);
+            }
+            layoutPresets();
             const capKey = JSON.stringify(cap) + composing + ta.disabled + ta.readOnly;
             const changed = ta.value !== lastValue;
             const syntaxKey = JSON.stringify(syntaxOf(cap));
@@ -597,7 +1008,7 @@
             if (changed || syntaxChanged) {
                 lastValue = ta.value; lastSyntax = syntaxKey;
                 rows = linesOf(ta.value, cap);
-                while (boxes.length > rows.length) { boxes.pop().remove(); spans.pop().remove(); visibleSpans.pop().remove(); }
+                while (boxes.length > rows.length) { numbers.pop().remove(); boxes.pop().remove(); spans.pop().remove(); visibleSpans.pop().remove(); }
                 while (boxes.length < rows.length) {
                     const index = boxes.length;
                     const box = make('input', 'plc-switch');
@@ -608,7 +1019,9 @@
                         const edit = editFor(ta.value, index, capability());
                         apply(edit ? [edit] : [], box, event);
                     });
-                    gutter.append(box); boxes.push(box);
+                    const number = make('span', 'plc-line-number', String(index + 1));
+                    number.setAttribute('aria-hidden', 'true');
+                    gutter.append(number, box); numbers.push(number); boxes.push(box);
                     spans.push(document.createElement('span'));
                     visibleSpans.push(make('span', 'plc-render-line'));
                 }
@@ -659,7 +1072,19 @@
             }
             if (!ta.getClientRects().length || ta.clientWidth === 0) return;
             nativeText(true);
+            gutterWidth = 60 + Math.max(2, String(rows.length).length) * 7;
+            ta.style.paddingLeft = `${basePadding + gutterWidth}px`;
+            component.style.setProperty('--plc-number-width', `${gutterWidth - 47}px`);
+            component.style.setProperty('--plc-prompt-start', `${ta.offsetLeft + ta.clientLeft + basePadding + gutterWidth}px`);
             const cs = getComputedStyle(ta);
+            component.style.setProperty('--plc-gutter-left', `${ta.offsetLeft + ta.clientLeft}px`);
+            component.style.setProperty('--plc-prompt-font', cs.fontFamily);
+            component.style.setProperty('--plc-prompt-size', cs.fontSize);
+            component.style.setProperty('--plc-prompt-line-height', cs.lineHeight === 'normal' ? `${parseFloat(cs.fontSize) * 1.2}px` : cs.lineHeight);
+            if (!editor.hidden) for (const item of operationInputs) {
+                item.text.style.height = 'auto';
+                item.text.style.height = `${item.text.scrollHeight}px`;
+            }
             const foreground = cs.color;
             component.style.setProperty('--plc-foreground', foreground);
             const rgb = foreground.match(/[\d.]+/g);
@@ -690,6 +1115,8 @@
                 const rect = rects[0];
                 if (!rect) return;
                 const y = rect.top - mirrorBounds.top - ta.scrollTop + (rect.height - 18) / 2;
+                numbers[i].style.top = `${y}px`;
+                numbers[i].style.visibility = y < -9 || y > ta.clientHeight - 9 ? 'hidden' : 'visible';
                 boxes[i].style.top = `${y}px`;
                 boxes[i].style.visibility = y < -9 || y > ta.clientHeight - 9 ? 'hidden' : 'visible';
                 if (isCommented(rows[i], cap) && cap.marker) {
@@ -729,6 +1156,7 @@
                 if (hoverRaf) cancelAnimationFrame(hoverRaf);
                 listeners.forEach(fn => fn()); if (observer) observer.disconnect();
                 nativeText(true);
+                presetStrip.remove(); presetToolbar.remove(); editor.remove(); notice.remove();
                 gutter.remove(); mirror.remove(); overlay.remove(); hoverLayer.remove(); status.remove(); header.remove();
                 ta.style.paddingLeft = original.padding; ta.style.cursor = original.cursor; host.style.position = original.position;
                 ta.classList.remove('plc-input'); component.classList.remove('plc-component');
@@ -743,7 +1171,7 @@
         }
         for (const selector of SELECTORS) {
             const component = root().querySelector(selector);
-            const ta = component && component.querySelector('textarea');
+            const ta = component && component.querySelector('textarea:not(.plc-switch-input)');
             if (ta && !controllers.has(ta)) controllers.set(ta, makeController(component, ta));
         }
     }
