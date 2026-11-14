@@ -34,10 +34,14 @@ def store_path():
 def validate_presets(items):
     if not isinstance(items, list):
         raise ValueError('Invalid presets')
-    ids, result = set(), []
-    for item in items:
+    ids, slots, result = set(), set(), []
+    for index, item in enumerate(items):
         if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id'] or item['id'] in ids:
             raise ValueError('Invalid preset ID')
+        slot = item.get('slot', index + 1)
+        if type(slot) is not int or not 1 <= slot <= 10000 or slot in slots:
+            raise ValueError('Invalid preset slot')
+        slots.add(slot)
         name = item.get('name')
         if not isinstance(name, str) or not name.strip() or len(name) > 80:
             raise ValueError('Invalid name')
@@ -67,8 +71,17 @@ def validate_presets(items):
             lines.add(line)
             clean.append(entry)
         ids.add(item['id'])
-        result.append({'id': item['id'], 'name': name, 'operations': clean})
-    return result
+        result.append({'id': item['id'], 'name': name, 'slot': slot, 'operations': clean})
+    return sorted(result, key=lambda item: item['slot'])
+
+
+def validate_rows(value, presets):
+    minimum = max(1, (max((item['slot'] for item in presets), default=0) + 9) // 10)
+    if value is None:
+        return minimum
+    if type(value) is not int or not minimum <= value <= 1000:
+        raise ValueError('Invalid preset rows')
+    return value
 
 
 @contextmanager
@@ -110,14 +123,25 @@ def store_lock(path):
 
 def read_store(path):
     if not path.exists():
-        return {'version': 1, 'revision': 0, 'instance': str(uuid.uuid4()), 'scopes': {}}
+        return {'version': 1, 'revision': 0, 'instance': str(uuid.uuid4()), 'scopes': {}, 'rows': {}, 'hidden': {}}
     data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict) or data.get('version') != 1 or type(data.get('revision')) is not int or data['revision'] < 0 or not isinstance(data.get('scopes'), dict) or not isinstance(data.get('instance'), str):
         raise ValueError('Invalid store')
+    rows = data.get('rows', {})
+    if not isinstance(rows, dict) or any(scope not in STORE_SCOPES for scope in rows):
+        raise ValueError('Invalid rows')
+    data['rows'] = rows
+    hidden = data.get('hidden', {})
+    if not isinstance(hidden, dict) or any(scope not in STORE_SCOPES or type(value) is not bool for scope, value in hidden.items()):
+        raise ValueError('Invalid visibility')
+    data['hidden'] = hidden
     for scope, presets in data['scopes'].items():
         if scope not in STORE_SCOPES:
             raise ValueError('Unknown scope')
-        validate_presets(presets)
+        data['scopes'][scope] = validate_presets(presets)
+    for scope in data['scopes'].keys() | rows.keys() | hidden.keys():
+        rows[scope] = validate_rows(rows.get(scope), data['scopes'].get(scope, []))
+        hidden.setdefault(scope, False)
     return data
 
 
@@ -165,16 +189,24 @@ def handle_store(raw, request):
             if not path.exists():
                 write_store(path, data)
             current = data['scopes'].get(scope, [])
+            rows = data['rows'].get(scope, 1)
+            hidden = data['hidden'].get(scope, False)
             if query['action'] == 'write':
                 incoming = validate_presets(query.get('presets'))
+                incoming_rows = validate_rows(query.get('rows', max(rows, validate_rows(None, incoming))), incoming)
+                incoming_hidden = query.get('hidden', hidden)
+                if type(incoming_hidden) is not bool:
+                    raise ValueError('Invalid visibility')
                 if query.get('revision') != data['revision']:
-                    return json.dumps({**result, 'conflict': True, 'revision': data['revision'], 'presets': current,
+                    return json.dumps({**result, 'conflict': True, 'revision': data['revision'], 'presets': current, 'rows': rows, 'hidden': hidden,
                         'error': '別の画面で設定が変更されました。最新の設定を読み直してから保存してください。'})
                 data['scopes'][scope] = incoming
+                data['rows'][scope] = incoming_rows
+                data['hidden'][scope] = incoming_hidden
                 data['revision'] += 1
                 write_store(path, data)
-                current = incoming
-            return json.dumps({**result, 'ok': True, 'revision': data['revision'], 'presets': current, 'path': str(path), 'instance': data['instance']}, ensure_ascii=False)
+                current, rows, hidden = incoming, incoming_rows, incoming_hidden
+            return json.dumps({**result, 'ok': True, 'revision': data['revision'], 'presets': current, 'rows': rows, 'hidden': hidden, 'path': str(path), 'instance': data['instance']}, ensure_ascii=False)
     except Exception:
         return json.dumps({**result, 'error': '設定ファイルを読み書きできません。既存の設定は変更していません。'}, ensure_ascii=False)
 

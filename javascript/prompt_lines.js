@@ -1,7 +1,7 @@
 /* Prompt Lines. Original textareas and host parsing stay intact. */
 (() => {
     'use strict';
-    const API_VERSION = '1.5.0-preview.6';
+    const API_VERSION = '1.6.0-preview.4';
     // Match Python's Unicode whitespace, excluding LF (the physical line separator).
     const SPACE = '[\\t \\r\\f\\v\\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
     const blank = text => new RegExp(`^(?:${SPACE}|\\n)*$`).test(text);
@@ -365,35 +365,99 @@
     }
     function validPresets(data) {
         if (!Array.isArray(data)) return [];
-        const ids = new Set();
-        return data.flatMap(p => {
+        const ids = new Set(), slots = new Set();
+        return data.flatMap((p, index) => {
+            const slot = p?.slot === undefined ? index + 1 : p.slot;
+            if (!Number.isInteger(slot) || slot < 1 || slot > 10000 || slots.has(slot)) return [];
             if (!p || typeof p.id !== 'string' || !p.id || ids.has(p.id) || typeof p.name !== 'string' || !p.name.trim()) return [];
             const operations = presetOperations(p), lines = new Set();
             if (!operations.length || operations.some(op => !op || !Number.isSafeInteger(op.line) || op.line < 1 ||
                 lines.has(op.line) || !lines.add(op.line) || !['replace', 'disable', 'enable'].includes(op.mode) || (op.state !== undefined && !['keep', 'enable', 'disable'].includes(op.state)) ||
                 typeof op.original !== 'string' || /[\r\n]/.test(op.original) ||
                 (op.mode === 'replace' && (typeof op.text !== 'string' || /[\r\n]/.test(op.text))))) return [];
-            ids.add(p.id);
-            return [{id: p.id, name: p.name.trim().slice(0, 80), operations: operations.map(op =>
+            ids.add(p.id); slots.add(slot);
+            return [{slot, id: p.id, name: p.name.trim().slice(0, 80), operations: operations.map(op =>
                 ({line: op.line, mode: op.mode, original: op.original, ...(op.mode === 'replace' ? {text: op.text, ...(op.state && op.state !== 'keep' ? {state: op.state} : {})} : {})}))}];
         });
     }
+    function slotRows(presets, rows = 1) {
+        return Math.max(1, Number.isInteger(rows) && rows <= 1000 ? rows : 1,
+            Math.ceil(Math.max(0, ...presets.map(p => p.slot)) / 10));
+    }
+    function placePreset(presets, preset, slot) {
+        if (!Number.isInteger(slot) || slot < 1 || slot > 10000) throw new Error('番号は1〜10000で指定してください。');
+        const next = presets.filter(p => p.id !== preset.id).map(p => ({...p}));
+        const occupied = new Map(next.map(p => [p.slot, p]));
+        let free = slot;
+        while (occupied.has(free)) free++;
+        if (free > 10000) throw new Error('これ以上番号を追加できません。');
+        for (let n = free - 1; n >= slot; n--) occupied.get(n).slot = n + 1;
+        next.push({...preset, slot});
+        return next.sort((a,b) => a.slot - b.slot);
+    }
+    // Dragging swaps only the two occupied slots; numeric registration still inserts.
+    function movePreset(presets, id, slot) {
+        if (!Number.isInteger(slot) || slot < 1 || slot > 10000) throw new Error('番号は1〜10000で指定してください。');
+        const source = presets.find(p => p.id === id);
+        if (!source) throw new Error('移動するプリセットが見つかりません。');
+        return presets.map(p => p.id === id ? {...p, slot} :
+            p.slot === slot ? {...p, slot: source.slot} : {...p}).sort((a,b) => a.slot - b.slot);
+    }
+    function compactPresets(presets) {
+        return [...presets].sort((a,b) => a.slot-b.slot).map((p,index) => ({...p, slot:index+1}));
+    }
+    function hasSlotGaps(presets) {
+        return [...presets].sort((a,b) => a.slot-b.slot).some((p,index) => p.slot !== index+1);
+    }
+    function canRemoveSlotRow(presets, rows, row = rows) {
+        return Number.isInteger(rows) && Number.isInteger(row) && rows > 1 && row > 1 && row <= rows &&
+            !presets.some(p => p.slot > (row-1)*10 && p.slot <= row*10);
+    }
+    function removeSlotRow(presets, rows, row) {
+        if (!canRemoveSlotRow(presets, rows, row)) throw new Error('登録済みの行・最初の行は削除できません。');
+        return {presets:presets.map(p => ({...p, slot:p.slot > row*10 ? p.slot-10 : p.slot})).sort((a,b)=>a.slot-b.slot), rows:rows-1};
+    }
+    function mergePresetLayout(presets, incoming, newId) {
+        const replacements = new Set(), assigned = new Set(); let added = 0;
+        const equivalent = (a,b) => a.name === b.name && JSON.stringify(a.operations) === JSON.stringify(b.operations);
+        const resolved = incoming.map(item => {
+            const same = presets.find(p => !replacements.has(p.id) && p.id === item.id && equivalent(p,item)) ||
+                presets.find(p => !replacements.has(p.id) && equivalent(p,item));
+            if (same) { replacements.add(same.id); assigned.add(same.id); return {...item, id:same.id}; }
+            added++;
+            const id = presets.some(p => p.id === item.id) || assigned.has(item.id) ? newId() : item.id;
+            assigned.add(id); return {...item, id};
+        });
+        // Reserve imported positions first so displaced local entries cannot shift them.
+        const occupied = new Set(resolved.map(p => p.slot));
+        const next = [...resolved];
+        for (const item of presets.filter(p => !replacements.has(p.id)).sort((a,b) => a.slot-b.slot)) {
+            let slot = item.slot;
+            while (occupied.has(slot)) slot++;
+            if (slot > 10000) throw new Error('これ以上番号を追加できません。');
+            occupied.add(slot); next.push({...item, slot});
+        }
+        return {presets:next.sort((a,b) => a.slot-b.slot), added};
+    }
     function switchPlan(value, preset, peers, config) {
-        const rows = linesOf(value, config), syntax = syntaxOf(config), edits = [], changes = [], seen = new Set();
+        const rows = linesOf(value, config), syntax = syntaxOf(config), changes = [], seen = new Set();
+        const output = rows.map(row => row.text);
         if (!syntax.marker) return {error:'行の無効化機能を確認できません。読み込み完了を待ってください。'};
         for (const op of presetOperations(preset)) {
-            if (!Number.isSafeInteger(op.line) || op.line < 1 || seen.has(op.line)) return {error:`${op.line}行目が不正または重複しています。`};
+            if (!Number.isSafeInteger(op.line) || op.line < 1 || op.line > 10000 || seen.has(op.line)) return {error:`${op.line}行目が不正または重複しています。`};
             seen.add(op.line);
-            const row = rows[op.line - 1];
-            if (!row) return {error:`${op.line}行目がありません。`};
+            // Missing and blank rows can restore saved text, including muted text.
+            // Validate every operation first; no editor mutation occurs on failure.
+            const row = rows[op.line - 1] || linesOf(value + '\n', syntax).at(-1);
             if (row.blocked) return {error:`${op.line}行目は複数行コメントの一部のため変更できません。`};
             if (typeof op.text !== 'string' || !op.text.trim() || /[\r\n]/.test(op.text)) return {error:`${op.line}行目のプロンプトを空欄・改行なしで入力してください。`};
             const state = op.state;
             if (!['enable','disable'].includes(state)) return {error:`${op.line}行目の有効・無効を選び、プリセットを保存し直してください。`};
             let text;
             if (state === 'disable') {
-                if (rowBody(row) !== op.text) return {error:`${op.line}行目の内容が一致しないため無効化できません。\n現在：${rowBody(row)}\n登録：${op.text}`};
-                text = row.off ? row.text : syntax.marker + row.text;
+                if (row.empty && linesOf(op.text, syntax)[0].blocked) return {error:`${op.line}行目は複数行コメントの一部のため変更できません。`};
+                if (!row.empty && rowBody(row) !== op.text) return {error:`${op.line}行目の内容が一致しないため無効化できません。\n現在：${rowBody(row)}\n登録：${op.text}`};
+                text = row.empty ? syntax.marker + op.text : row.off ? row.text : syntax.marker + row.text;
             } else {
                 text = op.text;
                 const target = linesOf(text, syntax)[0];
@@ -401,8 +465,17 @@
                 if (target.blocked || target.off) return {error:`${op.line}行目は有効なプロンプト本文を入力してください（行全体のコメントは除いてください）。`};
             }
             changes.push({line:op.line,current:row.text,text,confirm:false});
-            if (text !== row.text) edits.push({start:row.start,end:row.start+row.text.length,text});
+            while (output.length < op.line) output.push('');
+            output[op.line - 1] = text;
         }
+        // Keep granular positions for caret mapping while apply() performs one native
+        // transaction. Attach appended rows to the final existing row to avoid two
+        // insertions competing for the same offset when that final row is empty.
+        const edits = rows.flatMap((row, index) => {
+            const text = index === rows.length - 1 ? output.slice(index).join('\n') : output[index];
+            const edit = rowEdit(row, text);
+            return edit ? [edit] : [];
+        });
         return {edits,changes,confirm:false};
     }
 
@@ -448,13 +521,15 @@
         for (const part of selection.split(/[,，、]/)) {
             const m = /^\s*(\d+)\s*(?:[-~〜～–]\s*(\d+)\s*)?$/.exec(part);
             const start = m && Number(m[1]), end = m && Number(m[2] || m[1]);
-            if (!m || start < 1 || end < start || end > presets.length || end - start > 199) return {error:'対象ボタン番号を入力してください（例：1-5 / 2,4）。'};
+            if (!m || start < 1 || end < start || end > 10000 || end - start > 199) return {error:'対象ボタン番号を入力してください（例：1-5 / 2,4）。'};
             for (let n=start; n<=end; n++) selected.add(n);
         }
         if (!selected.size || selected.size > 200) return {error:'対象は1〜200件で指定してください。'};
         const jobs=[]; let current=prompt;
         for (const n of [...selected].sort((a,b)=>a-b)) {
-            const preset=presets[n-1], plan=switchPlan(current,preset,presets,config);
+            const preset=presets.find((p,index) => (p.slot ?? index+1) === n);
+            if (!preset) return {error:`${n}番は空き枠です。生成していません。`};
+            const plan=switchPlan(current,preset,presets,config);
             if (plan.error) return {error:`${n} ${preset.name}：${plan.error.split('\n')[0]} 生成していません。`};
             current=applyTextEdits(current,plan.edits);
             jobs.push({id:preset.id,name:preset.name,prompt:current,negative});
@@ -464,7 +539,7 @@
 
     // Pure functions are exported only to the Node test runner, never as WebUI globals.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {sequenceInputs, sequencePlan, editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
+        module.exports = {removeSlotRow, hasSlotGaps, compactPresets, canRemoveSlotRow, movePreset, mergePresetLayout, slotRows, placePreset, sequenceInputs, sequencePlan, editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
         return;
     }
     if (window.__promptLinesLoaded) return;
@@ -760,8 +835,15 @@
         const storageKey = `prompt-lines:switches:v1:${component.id}`;
         const presetStrip = make('div', 'plc-presets');
         presetStrip.setAttribute('aria-label', '登録済みの切替');
+        presetStrip.id = component.id + '-plc-presets';
         const presetTrack = make('div', 'plc-preset-track');
-        presetStrip.append(presetTrack);
+        const addSlotRow = make('button', 'plc-action plc-slot-add', '＋ 行を追加'); addSlotRow.type = 'button';
+        const compactButton = make('button', 'plc-action plc-slot-add', '空きを詰める'); compactButton.type = 'button';
+        const compactGlyph = make('span', 'plc-action-icon plc-preset-icon'); compactGlyph.setAttribute('aria-hidden','true');
+        compactGlyph.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v14M8 7h11M8 12h7M8 17h11M21 10l-2 2 2 2"/></svg>';
+        compactButton.prepend(compactGlyph);
+        const slotActions = make('div', 'plc-slot-actions'); slotActions.append(addSlotRow, compactButton);
+        presetStrip.append(presetTrack, slotActions);
         component.insertBefore(presetStrip, header);
         const notice = make('div', 'plc-switch-notice');
         notice.setAttribute('role', 'status'); notice.hidden = true;
@@ -778,7 +860,8 @@
         switchGlyph.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-9M18 2v8M14 6h8M8 12h4M8 16h8"/></svg>'; switchGlyph.setAttribute('aria-hidden', 'true');
         switchButton.append(switchGlyph, document.createTextNode('登録'));
         actions.append(switchButton);
-        let presets = [], editingId = null, layoutWidth = -1;
+        let slotDirty = false;
+        let presets = [], presetRows = 1, presetsHidden = false, editingId = null, layoutWidth = -1, draggedId = null, suppressClickUntil = 0;
         function showNotice(message) { notice.textContent = message; notice.hidden = !message; }
         function field(parent, label, tag, type) {
             const wrapper = make('label', 'plc-switch-field');
@@ -786,6 +869,8 @@
             if (type) input.type = type;
             wrapper.append(make('span', '', label), input); parent.append(wrapper); return input;
         }
+        const slotInput = field(editor, '番号', 'input', 'number'); slotInput.min = '1'; slotInput.max = '10000'; slotInput.step = '1'; slotInput.parentElement.classList.add('plc-slot-field');
+        slotInput.addEventListener('input', () => { slotDirty = true; });
         const nameInput = field(editor, 'ボタン名', 'input', 'text'); nameInput.maxLength = 80;
         const rangeControls = make('div', 'plc-range-controls');
         const rangeInput = field(rangeControls, 'まとめて登録', 'input', 'text'); rangeInput.placeholder = '例：1-5 / 1-2,4-5';
@@ -857,20 +942,27 @@
         const presetToolbar = make('div', 'plc-preset-toolbar');
         const presetDivider = make('span', 'plc-divider'); presetDivider.setAttribute('aria-hidden','true');
         const storagePath = make('small', 'plc-storage-path', '保存先を確認中…');
-        presetToolbar.append(switchButton, editHint, presetDivider, importButton, importFile, storagePath);
+        const visibilityButton = make('button', 'plc-action plc-visibility', 'ボタンを非表示'); visibilityButton.type = 'button';
+        const visibilityGlyph = make('span','plc-action-icon plc-preset-icon'); visibilityGlyph.setAttribute('aria-hidden','true');
+        const visibilityLabel = make('span','plc-visibility-label','ボタンを非表示');
+        visibilityButton.replaceChildren(visibilityGlyph, visibilityLabel);
+        visibilityButton.setAttribute('aria-expanded','true');
+        visibilityButton.setAttribute('aria-controls',presetStrip.id);
+        presetToolbar.append(visibilityButton, switchButton, editHint, presetDivider, importButton, importFile, storagePath);
         const toolbarBranding = make('div', 'plc-toolbar-branding');
         toolbarBranding.setAttribute('aria-hidden', 'true');
         toolbarBranding.append(brand.cloneNode(true), divider.cloneNode(true)); presetToolbar.prepend(toolbarBranding);
         header.before(presetToolbar);
         presetToolbar.after(editor); editor.after(notice);
         const nameRow = make('div', 'plc-name-row');
-        nameInput.parentElement.before(nameRow); nameRow.append(nameInput.parentElement, editorActions);
+        nameInput.parentElement.before(nameRow); nameRow.append(slotInput.parentElement, nameInput.parentElement, editorActions);
         const registrationRow = make('div', 'plc-registration-row');
         nameRow.before(registrationRow); registrationRow.append(nameRow, rangeControls);
         function closeEditor() { editor.hidden = true; switchButton.setAttribute('aria-expanded', 'false'); schedule(); }
         function openEditor(preset) {
-            editingId = preset ? preset.id : null; validationShown = false;
+            editingId = preset ? preset.id : null; validationShown = false; slotDirty = false;
             nameInput.value = preset ? preset.name : '';
+            slotInput.value = preset ? preset.slot : Math.min(10000, Math.max(0, ...presets.map(p => p.slot)) + 1);
             operationList.replaceChildren(); operationInputs = [];
             const initial = captureRows(ta.value, '1', capability());
             for (const op of preset ? preset.operations : (initial.operations || [{}])) addOperation(op);
@@ -886,60 +978,109 @@
                 if (!result.ok) throw new Error(result.error);
                 const loaded = validPresets(result.presets);
                 if (loaded.length !== result.presets.length) throw new Error('保存済みの設定を読み取れません。元のファイルは変更していません。');
-                presets = loaded; serverRevision = result.revision; serverReady = true;
+                presets = loaded; presetRows = slotRows(loaded, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; serverReady = true;
                 storagePath.textContent = /[A-Za-z]:[\\/]/.test(result.path) ? '保存先：%LOCALAPPDATA%\\PromptLines' : `保存先：${result.path.replace(/[\\/]presets\.json$/, '')}`; storagePath.title = result.path;
                 renderPresets();
                 initialized = true;
             } catch (error) { serverReady = false; showNotice(error.message || '設定を読み込めませんでした。'); }
             schedule();
         }
-        async function persist(next) {
+        async function persist(next, rows = presetRows, hidden = presetsHidden) {
+            rows = slotRows(next, rows);
             if (!serverReady || storeBusy) { showNotice('設定の読み書きが完了するまでお待ちください。'); return false; }
             storeBusy = true; saveButton.disabled = deleteButton.disabled = true;
             try {
-                let result = await storeRequest('write', component.id, {revision: serverRevision, presets: next});
+                let result = await storeRequest('write', component.id, {revision: serverRevision, presets: next, rows, hidden});
                 // A concurrent write to another prompt scope does not invalidate this one.
-                if (result.conflict && JSON.stringify(result.presets) === JSON.stringify(presets)) {
-                    result = await storeRequest('write', component.id, {revision: result.revision, presets: next});
+                if (result.conflict && JSON.stringify(validPresets(result.presets)) === JSON.stringify(presets) && result.rows === presetRows && (result.hidden === true) === presetsHidden) {
+                    result = await storeRequest('write', component.id, {revision: result.revision, presets: next, rows, hidden});
                 }
                 if (!result.ok) {
-                    if (result.conflict) { presets = validPresets(result.presets); serverRevision = result.revision; renderPresets(); }
+                    if (result.conflict) { presets = validPresets(result.presets); presetRows = slotRows(presets, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; renderPresets(); }
                     throw new Error(result.error);
                 }
-                presets = validPresets(result.presets); serverRevision = result.revision; renderPresets(); return true;
+                presets = validPresets(result.presets); presetRows = slotRows(presets, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; renderPresets(); return true;
             } catch (error) { showNotice(error.message || '設定を保存できませんでした。'); return false; }
-            finally { storeBusy = false; saveButton.disabled = deleteButton.disabled = false; schedule(); }
+            finally { storeBusy = false; saveButton.disabled = deleteButton.disabled = false; addSlotRow.disabled = !serverReady; schedule(); }
         }
-        function layoutPresets() {
-            if (presetStrip.hidden || !presetStrip.clientWidth) return;
-            const width = presetStrip.clientWidth;
-            if (width === layoutWidth) return;
-            layoutWidth = width;
-            const buttons = Array.from(presetTrack.children);
-            const widths = buttons.map(button => button.getBoundingClientRect().width);
-            const needed = widths.reduce((sum, w) => sum + w, 0) + Math.max(0, widths.length - 1) * 8;
-            presetTrack.style.width = '';
-            if (needed <= width) return;
-            const fits = limit => {
-                let rows = 1, used = 0;
-                for (const w of widths) {
-                    if (used && used + 8 + w > limit + 0.1) { rows++; used = w; }
-                    else used += (used ? 8 : 0) + w;
-                }
-                return rows <= 2;
-            };
-            let low = Math.max(width, ...widths), high = Math.max(low, needed);
-            for (let i = 0; i < 20; i++) { const mid = (low + high) / 2; if (fits(mid)) high = mid; else low = mid; }
-            presetTrack.style.width = `${Math.ceil(high + 1)}px`;
-        }
+        function layoutPresets() { /* CSS grid keeps exactly ten slots per row. */ }
+        listen(addSlotRow, 'click', async () => {
+            if (presetRows >= 1000) { showNotice('追加できるのは1000行までです。'); return; }
+            if (await persist(presets, presetRows + 1)) showNotice('');
+        });
+        listen(compactButton, 'click', async () => {
+            if (await persist(compactPresets(presets))) showNotice('');
+        });
+        listen(visibilityButton, 'click', async () => {
+            if (await persist(presets, presetRows, !presetsHidden)) showNotice('');
+        });
         function renderPresets() {
             const scroll = presetStrip.scrollLeft;
+            draggedId = null;
+            if (editingId && !slotDirty) {
+                const edited = presets.find(p => p.id === editingId);
+                if (edited) slotInput.value = edited.slot;
+            }
             presetTrack.replaceChildren();
-            presetStrip.hidden = !presets.length;
-            for (const preset of presets) {
-                const button = make('button', 'plc-preset', `${presets.indexOf(preset)+1} ${preset.name}`); button.type = 'button';
-                button.title = preset.operations.map(op => `${op.line}行目：${op.mode === 'disable' ? '無効化' : op.mode === 'enable' ? '有効化' : op.text}`).join('\n') + '\n右クリックまたは Shift＋クリックで編集';
+            presetStrip.hidden = presetsHidden;
+            visibilityLabel.textContent = presetsHidden ? 'ボタンを表示' : 'ボタンを非表示';
+            visibilityGlyph.innerHTML = presetsHidden
+                ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
+                : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a19 19 0 0 1-3.2 4.1M6.2 6.2A20 20 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.8-1.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+            visibilityButton.setAttribute('aria-expanded', String(!presetsHidden));
+            compactButton.disabled = !serverReady || storeBusy || !hasSlotGaps(presets);
+            addSlotRow.disabled = !serverReady || storeBusy;
+            const bySlot = new Map(presets.map(p => [p.slot, p]));
+            let rowContainer;
+            for (let slot = 1; slot <= presetRows * 10; slot++) {
+                if ((slot-1)%10 === 0) {
+                    rowContainer = make('div', 'plc-slot-row'); presetTrack.append(rowContainer);
+                    const rowNumber = (slot-1)/10+1;
+                    const removeRow = make('button','plc-slot-remove','×'); removeRow.type = 'button';
+                    removeRow.dataset.row = rowNumber;
+                    removeRow.title = rowNumber === 1 ? '最初の行は削除できません' :
+                        canRemoveSlotRow(presets,presetRows,rowNumber) ? '空の行を削除（後続番号を10繰り上げ）' : '登録済みのボタンがある行は削除できません';
+                    removeRow.setAttribute('aria-label',removeRow.title);
+                    removeRow.disabled = !canRemoveSlotRow(presets,presetRows,rowNumber);
+                    removeRow.addEventListener('click', async () => {
+                        if (!canRemoveSlotRow(presets,presetRows,rowNumber)) return;
+                        const next = removeSlotRow(presets,presetRows,rowNumber);
+                        if (await persist(next.presets,next.rows)) showNotice('');
+                    });
+                    rowContainer.append(removeRow);
+                }
+                const preset = bySlot.get(slot);
+                const cell = make('div', 'plc-slot'); cell.dataset.slot = slot;
+                cell.addEventListener('dragover', event => {
+                    if (!draggedId || storeBusy) return;
+                    event.preventDefault(); event.dataTransfer.dropEffect = 'move'; cell.classList.add('plc-slot-over');
+                });
+                cell.addEventListener('dragleave', () => cell.classList.remove('plc-slot-over'));
+                cell.addEventListener('drop', async event => {
+                    event.preventDefault(); cell.classList.remove('plc-slot-over');
+                    const moving = presets.find(p => p.id === draggedId); draggedId = null;
+                    suppressClickUntil = Date.now() + 300;
+                    if (!moving || moving.slot === slot || storeBusy) return;
+                    try { if (await persist(movePreset(presets, moving.id, slot))) { showNotice(''); const landed = presetTrack.querySelector(`[data-slot="${slot}"]`); landed?.classList.add('plc-slot-landed'); setTimeout(() => landed?.classList.remove('plc-slot-landed'), 500); } }
+                    catch (error) { showNotice(error.message); }
+                });
+                rowContainer.append(cell);
+                if (!preset) {
+                    const empty = make('button', 'plc-slot-empty', String(slot)); empty.type = 'button';
+                    empty.title = `${slot}番に登録`; empty.setAttribute('aria-label', `${slot}番：空き枠。クリックで登録`);
+                    empty.addEventListener('click', () => { if (!serverReady || storeBusy || Date.now() < suppressClickUntil) return; openEditor(null); slotInput.value = slot; });
+                    cell.append(empty); continue;
+                }
+                const button = make('button', 'plc-preset', `${preset.slot} ${preset.name}`); button.type = 'button';
+                button.title = preset.name;
+                button.draggable = true;
+                button.addEventListener('dragstart', event => {
+                    if (!serverReady || storeBusy) { event.preventDefault(); return; }
+                    draggedId = preset.id; button.classList.add('plc-dragging'); event.dataTransfer.setData('text/plain', preset.id); event.dataTransfer.effectAllowed = 'move';
+                });
+                button.addEventListener('dragend', () => { button.classList.remove('plc-dragging'); draggedId = null; suppressClickUntil = Date.now() + 300; presetTrack.querySelectorAll('.plc-slot-over').forEach(el => el.classList.remove('plc-slot-over')); });
                 button.addEventListener('click', event => {
+                    if (Date.now() < suppressClickUntil) return;
                     if (event.shiftKey) { openEditor(preset); return; }
                     if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
                     const value = ta.value;
@@ -957,7 +1098,7 @@
                     presetSuccess(plan, button);
                 });
                 button.addEventListener('contextmenu', event => { event.preventDefault(); openEditor(preset); });
-                presetTrack.append(button);
+                cell.append(button);
             }
             layoutWidth = -1; layoutPresets(); presetStrip.scrollLeft = scroll; schedule();
         }
@@ -999,7 +1140,8 @@
         });
         listen(saveButton, 'click', async () => {
             if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
-            const name = nameInput.value.trim();
+            const name = nameInput.value.trim(), slot = Number(slotInput.value);
+            if (!Number.isInteger(slot) || slot < 1 || slot > 10000) { showNotice('番号は1〜10000で指定してください。'); slotInput.focus(); return; }
             if (!name) { showNotice('ボタン名が未入力です。'); nameInput.focus(); return; }
             if (!operationInputs.length) { showNotice('操作する行を追加してください。'); return; }
             validationShown = true;
@@ -1010,23 +1152,20 @@
             }
             const old = presets.find(p => p.id === editingId);
             const next = {id: editingId || newPresetId(), name, operations};
-            if (await persist(old ? presets.map(p => p.id === old.id ? next : p) : [...presets, next])) { closeEditor(); showNotice(''); }
+            try { if (await persist(placePreset(presets, next, slot))) { closeEditor(); showNotice(''); } }
+            catch (error) { showNotice(error.message); }
         });
         function newPresetId() { return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
         listen(importButton, 'click', () => importFile.click());
         listen(importFile, 'change', async () => {
             const file = importFile.files[0]; importFile.value = ''; if (!file) return;
             try {
-                const parsed = JSON.parse(await file.text()), raw = Array.isArray(parsed) ? parsed : parsed.presets;
+                const parsed = JSON.parse(await file.text()), raw = Array.isArray(parsed) ? parsed : parsed.scopes ? parsed.scopes[component.id] : parsed.presets;
                 const incoming = validPresets(raw);
-                if (!Array.isArray(raw) || !raw.length || incoming.length !== raw.length) throw new Error();
-                // Existing entries are never overwritten. Re-importing an identical entry is a no-op.
-                const next = [...presets]; let added = 0;
-                for (const item of incoming) {
-                    if (next.some(p => p.name === item.name && JSON.stringify(p.operations) === JSON.stringify(item.operations))) continue;
-                    next.push({...item, id: next.some(p => p.id === item.id) ? newPresetId() : item.id}); added++;
-                }
-                if (await persist(next)) showNotice(`${added}件を追加しました。`);
+                if (!Array.isArray(raw) || incoming.length !== raw.length) throw new Error();
+                // Restore imported layout for identical entries, without losing unrelated presets.
+                const {presets:next, added} = mergePresetLayout(presets, incoming, newPresetId);
+                if (await persist(next, Math.max(presetRows, slotRows(incoming, parsed.rows?.[component.id] ?? parsed.rows)))) showNotice(`${added}件を追加しました。`);
             } catch (_) { showNotice('切替のJSONを読み込めませんでした。保存済みの設定は変更していません。'); }
         });
         listen(deleteButton, 'click', async () => {
@@ -1052,8 +1191,13 @@
         function render() {
             if (destroyed || !ta.isConnected) return;
             const cap = capability();
+            visibilityButton.disabled = !serverReady || storeBusy;
+            compactButton.disabled = !serverReady || storeBusy || !hasSlotGaps(presets);
             switchButton.disabled = !serverReady || storeBusy || !cap.marker || composing || ta.disabled || ta.readOnly;
-            presetStrip.querySelectorAll('button').forEach(button => { button.disabled = switchButton.disabled; });
+            presetTrack.querySelectorAll('button').forEach(button => {
+                button.disabled = !serverReady || storeBusy ||
+                    (button.classList.contains('plc-slot-remove') && !canRemoveSlotRow(presets,presetRows,Number(button.dataset.row)));
+            });
             const firstAction = actions.querySelector('button');
             if (firstAction && firstAction.getClientRects().length) {
                 const inset = Math.max(12, firstAction.getBoundingClientRect().left - component.getBoundingClientRect().left - component.clientLeft + header.scrollLeft);
