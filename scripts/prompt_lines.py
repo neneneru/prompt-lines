@@ -1,6 +1,8 @@
 """Prompt line controls, local presets and native selectable-script generation."""
 import html
 import json
+import re
+import secrets
 
 import gradio as gr
 from modules import scripts, shared
@@ -84,6 +86,51 @@ def validate_rows(value, presets):
     return value
 
 
+def random_group_color():
+    return f'#{secrets.randbelow(0x1000000):06x}'
+
+
+def default_group_scope(presets=None, rows=None):
+    items = validate_presets([] if presets is None else presets)
+    return {'activeGroup': 'default', 'groups': [
+        {'id': 'default', 'name': 'グループ1', 'color': random_group_color(), 'presets': items, 'rows': validate_rows(rows, items)}]}
+
+
+def validate_group_scope(value):
+    if not isinstance(value, dict):
+        raise ValueError('Invalid group scope')
+    groups, active = value.get('groups'), value.get('activeGroup')
+    if not isinstance(groups, list) or not 1 <= len(groups) <= 100:
+        raise ValueError('Invalid groups')
+    ids, result = set(), []
+    for group in groups:
+        if not isinstance(group, dict):
+            raise ValueError('Invalid group')
+        identity, name = group.get('id'), group.get('name')
+        if not isinstance(identity, str) or not identity.strip() or len(identity) > 128 or identity in ids:
+            raise ValueError('Invalid group ID')
+        if not isinstance(name, str) or not name.strip() or len(name) > 80:
+            raise ValueError('Invalid group name')
+        color = group['color'] if 'color' in group else random_group_color()
+        if not isinstance(color, str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+            raise ValueError('Invalid group color')
+        items = validate_presets(group.get('presets'))
+        rows = group.get('rows')
+        if type(rows) is not int:
+            raise ValueError('Invalid group rows')
+        result.append({'id': identity, 'name': name.strip(), 'color': color.lower(), 'presets': items,
+                       'rows': validate_rows(rows, items)})
+        ids.add(identity)
+    if not isinstance(active, str) or active not in ids:
+        raise ValueError('Invalid active group')
+    return {'activeGroup': active, 'groups': result}
+
+
+def scope_response(value):
+    active = next(group for group in value['groups'] if group['id'] == value['activeGroup'])
+    return {**value, 'presets': active['presets'], 'rows': active['rows']}
+
+
 @contextmanager
 def store_lock(path):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -121,28 +168,35 @@ def store_lock(path):
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def read_store(path):
+def read_store(path, with_migration=False):
     if not path.exists():
-        return {'version': 1, 'revision': 0, 'instance': str(uuid.uuid4()), 'scopes': {}, 'rows': {}, 'hidden': {}}
+        data = {'version': 2, 'revision': 0, 'instance': str(uuid.uuid4()), 'scopes': {}, 'hidden': {}}
+        return (data, False) if with_migration else data
     data = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(data, dict) or data.get('version') != 1 or type(data.get('revision')) is not int or data['revision'] < 0 or not isinstance(data.get('scopes'), dict) or not isinstance(data.get('instance'), str):
+    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] not in (1, 2) or type(data.get('revision')) is not int or data['revision'] < 0 or not isinstance(data.get('scopes'), dict) or not isinstance(data.get('instance'), str):
         raise ValueError('Invalid store')
-    rows = data.get('rows', {})
-    if not isinstance(rows, dict) or any(scope not in STORE_SCOPES for scope in rows):
-        raise ValueError('Invalid rows')
-    data['rows'] = rows
+    if any(scope not in STORE_SCOPES for scope in data['scopes']):
+        raise ValueError('Unknown scope')
     hidden = data.get('hidden', {})
     if not isinstance(hidden, dict) or any(scope not in STORE_SCOPES or type(value) is not bool for scope, value in hidden.items()):
         raise ValueError('Invalid visibility')
     data['hidden'] = hidden
-    for scope, presets in data['scopes'].items():
-        if scope not in STORE_SCOPES:
-            raise ValueError('Unknown scope')
-        data['scopes'][scope] = validate_presets(presets)
-    for scope in data['scopes'].keys() | rows.keys() | hidden.keys():
-        rows[scope] = validate_rows(rows.get(scope), data['scopes'].get(scope, []))
+    needs_migration = data['version'] == 1
+    if data['version'] == 1:
+        rows = data.get('rows', {})
+        if not isinstance(rows, dict) or any(scope not in STORE_SCOPES for scope in rows):
+            raise ValueError('Invalid rows')
+        data['scopes'] = {scope: default_group_scope(data['scopes'].get(scope, []), rows.get(scope))
+                          for scope in data['scopes'].keys() | rows.keys() | hidden.keys()}
+        data.pop('rows', None)
+        data['version'] = 2
+    else:
+        normalized = {scope: validate_group_scope(value) for scope, value in data['scopes'].items()}
+        needs_migration = any('color' not in group for value in data['scopes'].values() for group in value['groups'])
+        data['scopes'] = normalized
+    for scope in data['scopes']:
         hidden.setdefault(scope, False)
-    return data
+    return (data, needs_migration) if with_migration else data
 
 
 def write_store(path, data):
@@ -185,28 +239,45 @@ def handle_store(raw, request):
             raise ValueError('Invalid request')
         path = store_path()
         with store_lock(path):
-            data = read_store(path)
-            if not path.exists():
-                write_store(path, data)
-            current = data['scopes'].get(scope, [])
-            rows = data['rows'].get(scope, 1)
+            existed = path.exists()
+            data, needs_migration = read_store(path, with_migration=True)
+            missing_scope = scope not in data['scopes']
+            current = data['scopes'][scope] if not missing_scope else default_group_scope()
             hidden = data['hidden'].get(scope, False)
             if query['action'] == 'write':
-                incoming = validate_presets(query.get('presets'))
-                incoming_rows = validate_rows(query.get('rows', max(rows, validate_rows(None, incoming))), incoming)
+                if 'groups' in query or 'activeGroup' in query:
+                    incoming = validate_group_scope(query)
+                else:
+                    # Older callers update only the active group, preserving other groups.
+                    active = scope_response(current)
+                    items = validate_presets(query.get('presets'))
+                    rows = validate_rows(query.get('rows', max(active['rows'], validate_rows(None, items))), items)
+                    incoming = {**current, 'groups': [
+                        {**group, 'presets': items, 'rows': rows} if group['id'] == current['activeGroup'] else group
+                        for group in current['groups']]}
                 incoming_hidden = query.get('hidden', hidden)
                 if type(incoming_hidden) is not bool:
                     raise ValueError('Invalid visibility')
+                if needs_migration:
+                    data['revision'] += 1
+                    write_store(path, data)
                 if query.get('revision') != data['revision']:
-                    return json.dumps({**result, 'conflict': True, 'revision': data['revision'], 'presets': current, 'rows': rows, 'hidden': hidden,
-                        'error': '別の画面で設定が変更されました。最新の設定を読み直してから保存してください。'})
+                    return json.dumps({**result, 'conflict': True, 'revision': data['revision'],
+                        **scope_response(current), 'hidden': hidden,
+                        'error': '別の画面で設定が変更されました。最新の設定を読み直してから保存してください。'}, ensure_ascii=False)
                 data['scopes'][scope] = incoming
-                data['rows'][scope] = incoming_rows
                 data['hidden'][scope] = incoming_hidden
                 data['revision'] += 1
                 write_store(path, data)
-                current, rows, hidden = incoming, incoming_rows, incoming_hidden
-            return json.dumps({**result, 'ok': True, 'revision': data['revision'], 'presets': current, 'rows': rows, 'hidden': hidden, 'path': str(path), 'instance': data['instance']}, ensure_ascii=False)
+                current, hidden = incoming, incoming_hidden
+            elif needs_migration or missing_scope or not existed:
+                data['scopes'][scope] = current
+                data['hidden'][scope] = hidden
+                if existed:
+                    data['revision'] += 1
+                write_store(path, data)
+            return json.dumps({**result, 'ok': True, 'revision': data['revision'], **scope_response(current),
+                'hidden': hidden, 'path': str(path), 'instance': data['instance']}, ensure_ascii=False)
     except Exception:
         return json.dumps({**result, 'error': '設定ファイルを読み書きできません。既存の設定は変更していません。'}, ensure_ascii=False)
 

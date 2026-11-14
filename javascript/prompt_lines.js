@@ -1,7 +1,7 @@
 /* Prompt Lines. Original textareas and host parsing stay intact. */
 (() => {
     'use strict';
-    const API_VERSION = '1.6.0-preview.4';
+    const API_VERSION = '1.7.5';
     // Match Python's Unicode whitespace, excluding LF (the physical line separator).
     const SPACE = '[\\t \\r\\f\\v\\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
     const blank = text => new RegExp(`^(?:${SPACE}|\\n)*$`).test(text);
@@ -384,6 +384,64 @@
         return Math.max(1, Number.isInteger(rows) && rows <= 1000 ? rows : 1,
             Math.ceil(Math.max(0, ...presets.map(p => p.slot)) / 10));
     }
+    const GROUP_DEFAULT_COLOR = '#8b7cc8';
+    function groupColor(value) {
+        if (value === undefined) {
+            const value = new Uint32Array(1);
+            globalThis.crypto.getRandomValues(value);
+            return '#' + (value[0] & 0xffffff).toString(16).padStart(6,'0');
+        }
+        if (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)) throw new Error('カラーは #RRGGBB で入力してください。');
+        return value.toLowerCase();
+    }
+    function groupTextColor(color) {
+        const rgb = groupColor(color).slice(1).match(/../g).map(v => parseInt(v,16)/255);
+        const linear = rgb.map(v => v <= .04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
+        const luminance = linear[0]*.2126 + linear[1]*.7152 + linear[2]*.0722;
+        return luminance > .179 ? '#000000' : '#ffffff';
+    }
+    function groupState(data) {
+        const raw = data.groups || [{id:'default',name:'グループ1',presets:data.presets || [],rows:data.rows ?? 1}];
+        if (!Array.isArray(raw) || !raw.length || raw.length > 100) throw new Error('グループの設定が不正です。');
+        const ids = new Set();
+        const groups = raw.map((group,index) => {
+            if (!group || typeof group.id !== 'string' || !group.id || group.id.length > 128 || ids.has(group.id) ||
+                typeof group.name !== 'string' || !group.name.trim() || group.name.length > 80 ||
+                !Array.isArray(group.presets)) throw new Error('グループの設定が不正です。');
+            const presets = validPresets(group.presets), rows = group.rows ?? slotRows(presets);
+            if (presets.length !== group.presets.length || !Number.isInteger(rows) || rows < slotRows(presets) || rows > 1000)
+                throw new Error('グループの設定が不正です。');
+            ids.add(group.id);
+            return {id:group.id,name:group.name.trim(),color:groupColor(group.color),presets,rows};
+        });
+        const activeGroup = data.activeGroup ?? groups[0].id;
+        if (!ids.has(activeGroup)) throw new Error('選択中のグループが不正です。');
+        return {groups,activeGroup};
+    }
+    function removeGroup(groups, id) {
+        if (groups.length <= 1) throw new Error('最後のグループは削除できません。');
+        const index = groups.findIndex(group => group.id === id);
+        if (index < 0) throw new Error('グループが見つかりません。');
+        const next = groups.filter(group => group.id !== id);
+        return {groups: next, activeGroup: next[Math.min(index, next.length - 1)].id};
+    }
+    function nextGroupName(groups) {
+        const used = new Set(groups.map(group => group.name.trim()));
+        let number = 1;
+        while (used.has(`グループ${number}`)) number++;
+        return `グループ${number}`;
+    }
+    function mergeGroups(existing, incoming, newId, colorlessIds = new Set()) {
+        const next = [...existing];
+        for (const group of incoming) {
+            // Identical group imports are idempotent. Differing groups are appended,
+            // never merged by a coincidentally identical default ID or display name.
+            if (next.some(g => g.name === group.name && (colorlessIds.has(group.id) || g.color === group.color) && g.rows === group.rows && JSON.stringify(g.presets) === JSON.stringify(group.presets))) continue;
+            next.push({...group,id:next.some(g=>g.id===group.id) ? newId() : group.id});
+        }
+        if (next.length > 100) throw new Error('グループは100個までです。');
+        return next;
+    }
     function placePreset(presets, preset, slot) {
         if (!Number.isInteger(slot) || slot < 1 || slot > 10000) throw new Error('番号は1〜10000で指定してください。');
         const next = presets.filter(p => p.id !== preset.id).map(p => ({...p}));
@@ -539,7 +597,7 @@
 
     // Pure functions are exported only to the Node test runner, never as WebUI globals.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {removeSlotRow, hasSlotGaps, compactPresets, canRemoveSlotRow, movePreset, mergePresetLayout, slotRows, placePreset, sequenceInputs, sequencePlan, editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
+        module.exports = {groupTextColor, groupColor, removeGroup, nextGroupName, groupState, mergeGroups, removeSlotRow, hasSlotGaps, compactPresets, canRemoveSlotRow, movePreset, mergePresetLayout, slotRows, placePreset, sequenceInputs, sequencePlan, editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
         return;
     }
     if (window.__promptLinesLoaded) return;
@@ -844,7 +902,29 @@
         compactButton.prepend(compactGlyph);
         const slotActions = make('div', 'plc-slot-actions'); slotActions.append(addSlotRow, compactButton);
         presetStrip.append(presetTrack, slotActions);
-        component.insertBefore(presetStrip, header);
+        const presetArea = make('div','plc-preset-area');
+        const groupControl = make('div','plc-group-control');
+        const groupButton = make('button','plc-group-button','グループ1 ▾'); groupButton.type = 'button';
+        groupButton.setAttribute('aria-expanded','false');
+        const groupMenu = make('div','plc-group-menu'); groupMenu.hidden = true;
+        groupMenu.id = component.id + '-plc-groups'; groupButton.setAttribute('aria-controls',groupMenu.id);
+        const groupList = make('div','plc-group-list');
+        const groupName = make('input','plc-switch-input plc-group-name'); groupName.type='text'; groupName.maxLength=80;
+        groupName.placeholder='新しい名前'; groupName.setAttribute('aria-label','選択中のグループ名');
+        const groupAdd = make('button','plc-action plc-group-add','＋ グループを追加'); groupAdd.type='button';
+        const groupRename = make('button','plc-action','名称変更'); groupRename.type='button';
+        const groupDelete = make('button','plc-action plc-group-delete','削除'); groupDelete.type='button';
+        const groupColorButton = make('button','plc-action plc-group-color-button'); groupColorButton.type='button'; groupColorButton.title='カラーを変更'; groupColorButton.setAttribute('aria-label','グループカラーを変更');
+        const colorEditor=make('div','plc-group-color-editor'); colorEditor.hidden=true;
+        const colorInput=make('input','plc-switch-input'); colorInput.type='text'; colorInput.placeholder='#8b7cc8'; colorInput.maxLength=7; colorInput.setAttribute('aria-label','カラーコード');
+        const colorSave=make('button','plc-action','適用'); colorSave.type='button'; colorEditor.append(colorInput,colorSave);
+        const groupActions = make('div','plc-group-actions'); groupActions.append(groupName,groupRename,groupDelete,groupColorButton);
+        const groupRenameLabel = make('span','plc-group-caption','選択中の名前を変更');
+        const groupEdit = make('div','plc-group-edit'); groupEdit.append(groupRenameLabel,groupActions,colorEditor);
+        groupMenu.append(groupList,groupAdd,groupEdit);
+        const groupDivider=make('span','plc-divider');groupDivider.setAttribute('aria-hidden','true');
+        groupControl.append(groupButton,groupDivider,groupMenu);
+        presetArea.append(groupControl,presetStrip); component.insertBefore(presetArea,header);
         const notice = make('div', 'plc-switch-notice');
         notice.setAttribute('role', 'status'); notice.hidden = true;
         header.after(notice);
@@ -861,6 +941,8 @@
         switchButton.append(switchGlyph, document.createTextNode('登録'));
         actions.append(switchButton);
         let slotDirty = false;
+        let groups = [{id:'default',name:'グループ1',presets:[],rows:1}], activeGroup = 'default';
+        let editorGroupId = null, editorBaseline = '';
         let presets = [], presetRows = 1, presetsHidden = false, editingId = null, layoutWidth = -1, draggedId = null, suppressClickUntil = 0;
         function showNotice(message) { notice.textContent = message; notice.hidden = !message; }
         function field(parent, label, tag, type) {
@@ -947,7 +1029,8 @@
         const visibilityLabel = make('span','plc-visibility-label','ボタンを非表示');
         visibilityButton.replaceChildren(visibilityGlyph, visibilityLabel);
         visibilityButton.setAttribute('aria-expanded','true');
-        visibilityButton.setAttribute('aria-controls',presetStrip.id);
+        presetArea.id=component.id+'-plc-preset-area';
+        visibilityButton.setAttribute('aria-controls',presetArea.id);
         presetToolbar.append(visibilityButton, switchButton, editHint, presetDivider, importButton, importFile, storagePath);
         const toolbarBranding = make('div', 'plc-toolbar-branding');
         toolbarBranding.setAttribute('aria-hidden', 'true');
@@ -959,7 +1042,14 @@
         const registrationRow = make('div', 'plc-registration-row');
         nameRow.before(registrationRow); registrationRow.append(nameRow, rangeControls);
         function closeEditor() { editor.hidden = true; switchButton.setAttribute('aria-expanded', 'false'); schedule(); }
+        function editorSnapshot() {
+            return JSON.stringify([nameInput.value,slotInput.value,operationInputs.map(item=>[item.line.value,item.text.value,item.state()])]);
+        }
+        function allowGroupChange() {
+            return editor.hidden || editorSnapshot() === editorBaseline || window.confirm('未保存の編集内容を破棄してグループを切り替えますか？');
+        }
         function openEditor(preset) {
+            editorGroupId = activeGroup;
             editingId = preset ? preset.id : null; validationShown = false; slotDirty = false;
             nameInput.value = preset ? preset.name : '';
             slotInput.value = preset ? preset.slot : Math.min(10000, Math.max(0, ...presets.map(p => p.slot)) + 1);
@@ -969,40 +1059,96 @@
             deleteButton.hidden = !preset;
             editor.hidden = false; switchButton.setAttribute('aria-expanded', 'true');
             showNotice(''); if (!serverReady) loadStore();
+            editorBaseline=editorSnapshot();
             operationInputs[0].line.focus({preventScroll: true}); schedule();
         }
-        let serverReady = false, serverRevision = 0, storeBusy = false, initialized = false;
+        let serverReady = false, serverRevision = 0, storeBusy = false, initialized = false, loadEpoch = 0;
+        function adoptStore(result) {
+            const state=groupState(result);
+            groups=state.groups; activeGroup=state.activeGroup;
+            const selected=groups.find(g=>g.id===activeGroup);
+            presets=selected.presets; presetRows=selected.rows;
+            presetsHidden=result.hidden===true; serverRevision=result.revision;
+        }
         async function loadStore() {
+            if (storeBusy) return;
+            const epoch=++loadEpoch;
             try {
                 const result = await storeRequest('read', component.id);
+                if(epoch!==loadEpoch || storeBusy) return;
                 if (!result.ok) throw new Error(result.error);
-                const loaded = validPresets(result.presets);
-                if (loaded.length !== result.presets.length) throw new Error('保存済みの設定を読み取れません。元のファイルは変更していません。');
-                presets = loaded; presetRows = slotRows(loaded, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; serverReady = true;
+                adoptStore(result); serverReady = true;
                 storagePath.textContent = /[A-Za-z]:[\\/]/.test(result.path) ? '保存先：%LOCALAPPDATA%\\PromptLines' : `保存先：${result.path.replace(/[\\/]presets\.json$/, '')}`; storagePath.title = result.path;
                 renderPresets();
                 initialized = true;
-            } catch (error) { serverReady = false; showNotice(error.message || '設定を読み込めませんでした。'); }
+            } catch (error) { if(epoch!==loadEpoch)return; serverReady = false; showNotice(error.message || '設定を読み込めませんでした。'); }
             schedule();
         }
         async function persist(next, rows = presetRows, hidden = presetsHidden) {
-            rows = slotRows(next, rows);
+            return persistGroups(groups.map(g=>g.id===activeGroup ? {...g,presets:next,rows:slotRows(next,rows)} : g),activeGroup,hidden);
+        }
+        async function persistGroups(nextGroups, nextActive = activeGroup, hidden = presetsHidden) {
             if (!serverReady || storeBusy) { showNotice('設定の読み書きが完了するまでお待ちください。'); return false; }
-            storeBusy = true; saveButton.disabled = deleteButton.disabled = true;
+            storeBusy=true; ++loadEpoch; saveButton.disabled=deleteButton.disabled=true;
+            const baseline=JSON.stringify({groups,activeGroup});
             try {
-                let result = await storeRequest('write', component.id, {revision: serverRevision, presets: next, rows, hidden});
-                // A concurrent write to another prompt scope does not invalidate this one.
-                if (result.conflict && JSON.stringify(validPresets(result.presets)) === JSON.stringify(presets) && result.rows === presetRows && (result.hidden === true) === presetsHidden) {
-                    result = await storeRequest('write', component.id, {revision: result.revision, presets: next, rows, hidden});
-                }
+                const incoming=groupState({groups:nextGroups,activeGroup:nextActive});
+                let result=await storeRequest('write',component.id,{revision:serverRevision,...incoming,hidden});
+                if (result.conflict && JSON.stringify(groupState(result))===baseline && (result.hidden===true)===presetsHidden)
+                    result=await storeRequest('write',component.id,{revision:result.revision,...incoming,hidden});
                 if (!result.ok) {
-                    if (result.conflict) { presets = validPresets(result.presets); presetRows = slotRows(presets, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; renderPresets(); }
+                    if (result.conflict) { adoptStore(result); renderPresets(); }
                     throw new Error(result.error);
                 }
-                presets = validPresets(result.presets); presetRows = slotRows(presets, result.rows); presetsHidden = result.hidden === true; serverRevision = result.revision; renderPresets(); return true;
-            } catch (error) { showNotice(error.message || '設定を保存できませんでした。'); return false; }
-            finally { storeBusy = false; saveButton.disabled = deleteButton.disabled = false; addSlotRow.disabled = !serverReady; schedule(); }
+                adoptStore(result); renderPresets(); return true;
+            } catch(error) { showNotice(error.message || '設定を保存できませんでした。'); return false; }
+            finally { storeBusy=false; saveButton.disabled=deleteButton.disabled=false; addSlotRow.disabled=!serverReady; groupDelete.disabled=groups.length<=1 || !serverReady; schedule(); }
         }
+        function closeGroupMenu() { colorEditor.hidden=true; groupMenu.hidden=true; groupButton.setAttribute('aria-expanded','false'); }
+        listen(groupButton,'click',()=>{
+            groupMenu.hidden=!groupMenu.hidden; groupButton.setAttribute('aria-expanded',String(!groupMenu.hidden));
+            if (!groupMenu.hidden) groupName.value=groups.find(g=>g.id===activeGroup)?.name || '';
+        });
+        listen(groupMenu,'keydown',event=>{ if(event.key==='Escape'){closeGroupMenu();groupButton.focus();} });
+        listen(document,'pointerdown',event=>{if(!groupControl.contains(event.target))closeGroupMenu();});
+        async function changeGroup(id) {
+            if (id===activeGroup) {closeGroupMenu();return;}
+            if (!allowGroupChange()) return;
+            if (await persistGroups(groups,id)) {closeEditor();closeGroupMenu();showNotice('');}
+        }
+        listen(groupAdd,'click',async()=>{
+            const name=nextGroupName(groups);
+            if(groups.length>=100){showNotice('グループは100個までです。');return;}
+            if(!allowGroupChange())return;
+            const id=newPresetId();
+            if(await persistGroups([...groups,{id,name,color:groupColor(undefined),presets:[],rows:1}],id)){closeEditor();closeGroupMenu();showNotice('');}
+        });
+        listen(groupRename,'click',async()=>{
+            const name=groupName.value.trim();
+            if(!name){showNotice('グループ名を入力してください。');return;}
+            if(await persistGroups(groups.map(g=>g.id===activeGroup?{...g,name}:g))){closeGroupMenu();showNotice('');}
+        });
+        listen(groupColorButton,'click',()=>{
+            colorEditor.hidden=!colorEditor.hidden;
+            if(!colorEditor.hidden){colorInput.value=groups.find(g=>g.id===activeGroup)?.color || GROUP_DEFAULT_COLOR;colorInput.focus();}
+        });
+        listen(colorSave,'click',async()=>{
+            let color=colorInput.value.trim();
+            if(/^#[0-9a-f]{3}$/i.test(color)) color='#'+[...color.slice(1)].map(c=>c+c).join('');
+            try {color=groupColor(color);} catch(error){showNotice(error.message);return;}
+            if(await persistGroups(groups.map(g=>g.id===activeGroup?{...g,color}:g))){colorEditor.hidden=true;showNotice('');}
+        });
+        listen(groupDelete,'click',async()=>{
+            if (storeBusy || !serverReady || groups.length <= 1) return;
+            const current = groups.find(group => group.id === activeGroup);
+            if (!current) return;
+            const dirty = !editor.hidden && editorSnapshot() !== editorBaseline;
+            if (!window.confirm(`「${current.name}」と登録済みプリセット${current.presets.length}件を削除します。元に戻せません。${dirty ? '\n未保存の編集内容も破棄されます。' : ''}\n削除しますか？`)) return;
+            const next = removeGroup(groups,current.id);
+            if (await persistGroups(next.groups,next.activeGroup)) {
+                closeEditor(); closeGroupMenu(); showNotice('');
+            }
+        });
         function layoutPresets() { /* CSS grid keeps exactly ten slots per row. */ }
         listen(addSlotRow, 'click', async () => {
             if (presetRows >= 1000) { showNotice('追加できるのは1000行までです。'); return; }
@@ -1017,12 +1163,28 @@
         function renderPresets() {
             const scroll = presetStrip.scrollLeft;
             draggedId = null;
-            if (editingId && !slotDirty) {
+            if (editingId && editorGroupId===activeGroup && !slotDirty) {
                 const edited = presets.find(p => p.id === editingId);
-                if (edited) slotInput.value = edited.slot;
+                if (edited) { const clean=editorSnapshot()===editorBaseline; slotInput.value=edited.slot; if(clean)editorBaseline=editorSnapshot(); }
             }
             presetTrack.replaceChildren();
-            presetStrip.hidden = presetsHidden;
+            presetArea.hidden = presetsHidden;
+            const currentGroup=groups.find(g=>g.id===activeGroup);
+            groupColorButton.style.setProperty('--plc-group-color',currentGroup?.color || GROUP_DEFAULT_COLOR);
+            groupDelete.disabled = groups.length <= 1 || storeBusy || !serverReady;
+            groupDelete.title = groups.length <= 1 ? '最後のグループは削除できません' : '選択中のグループとプリセットを削除';
+            groupButton.replaceChildren();
+            groupButton.style.setProperty('--plc-group-color',currentGroup?.color || GROUP_DEFAULT_COLOR);
+            groupButton.title=currentGroup?.name || '';
+            groupButton.setAttribute('aria-label',(currentGroup?.name || 'グループ1')+'：グループを切り替え');
+            groupList.replaceChildren();
+            for(const group of groups){
+                const option=make('button','plc-group-option');
+                const swatch=make('span','plc-group-dot');swatch.style.backgroundColor=group.color;swatch.setAttribute('aria-hidden','true');
+                option.append(swatch,make('span','plc-group-label',group.name)); option.type='button';option.title=group.name;
+                option.setAttribute('aria-pressed',String(group.id===activeGroup));
+                option.addEventListener('click',()=>changeGroup(group.id));groupList.append(option);
+            }
             visibilityLabel.textContent = presetsHidden ? 'ボタンを表示' : 'ボタンを非表示';
             visibilityGlyph.innerHTML = presetsHidden
                 ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
@@ -1140,6 +1302,7 @@
         });
         listen(saveButton, 'click', async () => {
             if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
+            if (editorGroupId!==activeGroup) {showNotice('編集中のグループを再選択してください。');return;}
             const name = nameInput.value.trim(), slot = Number(slotInput.value);
             if (!Number.isInteger(slot) || slot < 1 || slot > 10000) { showNotice('番号は1〜10000で指定してください。'); slotInput.focus(); return; }
             if (!name) { showNotice('ボタン名が未入力です。'); nameInput.focus(); return; }
@@ -1159,8 +1322,18 @@
         listen(importButton, 'click', () => importFile.click());
         listen(importFile, 'change', async () => {
             const file = importFile.files[0]; importFile.value = ''; if (!file) return;
+            const importGroup=activeGroup;
             try {
-                const parsed = JSON.parse(await file.text()), raw = Array.isArray(parsed) ? parsed : parsed.scopes ? parsed.scopes[component.id] : parsed.presets;
+                const parsed = JSON.parse(await file.text());
+                if(importGroup!==activeGroup || storeBusy) throw new Error();
+                const scoped=parsed.scopes?.[component.id] || parsed;
+                if(scoped.groups){
+                    const incoming=groupState(scoped).groups;
+                    const next=mergeGroups(groups,incoming,newPresetId,new Set(scoped.groups.filter(g=>g.color===undefined).map(g=>g.id)));
+                    if(await persistGroups(next))showNotice('グループを読み込みました。');
+                    return;
+                }
+                const raw = Array.isArray(parsed) ? parsed : parsed.scopes ? parsed.scopes[component.id] : parsed.presets;
                 const incoming = validPresets(raw);
                 if (!Array.isArray(raw) || incoming.length !== raw.length) throw new Error();
                 // Restore imported layout for identical entries, without losing unrelated presets.
@@ -1169,6 +1342,7 @@
             } catch (_) { showNotice('切替のJSONを読み込めませんでした。保存済みの設定は変更していません。'); }
         });
         listen(deleteButton, 'click', async () => {
+            if(editorGroupId!==activeGroup){showNotice('編集中のグループを再選択してください。');return;}
             const item = presets.find(p => p.id === editingId);
             if (item && window.confirm(`「${item.name}」を削除しますか？`) && await persist(presets.filter(p => p.id !== item.id))) {
                 closeEditor(); showNotice('');
@@ -1191,6 +1365,8 @@
         function render() {
             if (destroyed || !ta.isConnected) return;
             const cap = capability();
+            groupControl.querySelectorAll('button,input').forEach(control=>{control.disabled=!serverReady || storeBusy;});
+            groupDelete.disabled = !serverReady || storeBusy || groups.length <= 1;
             visibilityButton.disabled = !serverReady || storeBusy;
             compactButton.disabled = !serverReady || storeBusy || !hasSlotGaps(presets);
             switchButton.disabled = !serverReady || storeBusy || !cap.marker || composing || ta.disabled || ta.readOnly;
@@ -1359,7 +1535,7 @@
         if (observer) observer.observe(ta);
         render();
         return {
-            sequenceSource() { return {scope:component.id, input:ta, presets:JSON.parse(JSON.stringify(presets)), ready:serverReady && !storeBusy}; },
+            sequenceSource() { return {scope:component.id, input:ta, groupId:activeGroup, groupName:groups.find(g=>g.id===activeGroup)?.name, presets:JSON.parse(JSON.stringify(presets)), ready:serverReady && !storeBusy}; },
             poll() {
                 if (ta.value !== lastValue || JSON.stringify(capability()) + composing + ta.disabled + ta.readOnly !== lastCap ||
                     ta.clientWidth !== lastWidth || ta.clientHeight !== lastHeight || themeSignature() !== lastTheme) schedule();

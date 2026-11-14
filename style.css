@@ -55,6 +55,7 @@
 .plc-switch-editor { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; padding: 12px; border-bottom: 1px solid var(--border-color-primary, #aaa5); }
 .plc-switch-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--body-text-color, inherit); }
 .plc-switch-field:nth-child(3) { grid-column: 1 / -1; }
+.plc-group-control .plc-switch-input,
 .plc-switch-editor .plc-switch-input { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border-color-primary, #9998); border-radius: 7px; color: var(--body-text-color, inherit); background: var(--input-background-fill, #fff); font: inherit; }
 .plc-component[data-plc-theme="dark"] .plc-switch-input { background: var(--input-background-fill, #20222a); color: var(--body-text-color, #eee); }
 .plc-switch-editor textarea.plc-switch-input { min-height: 60px; resize: vertical; }
@@ -508,3 +509,102 @@
 .plc-presets .plc-slot > button.plc-preset { min-width:0; max-width:100%; }
 .plc-slot-row > button.plc-slot-remove { box-sizing:border-box; min-width:0; max-width:24px; }
 .plc-slot-row > button.plc-slot-remove:disabled { opacity:.22; cursor:default; }
+
+/* One compact selector, regardless of group count; the list only opens on demand. */
+.plc-preset-area { display:grid; grid-template-columns:var(--plc-action-start,66px) minmax(0,1fr); min-width:0; position:relative; }
+.plc-preset-area[hidden], .plc-group-menu[hidden] { display:none !important; }
+.plc-preset-area > .plc-presets { margin-left:0; margin-right:100px; max-width:none; width:auto; min-width:0; }
+.plc-group-control { position:relative; min-width:0; margin-top:11px; padding:0 8px 0 10px; align-self:start; }
+.plc-group-control button.plc-group-button { box-sizing:border-box; width:100%; min-width:0; height:32px; padding:0 5px; border:1px solid #a6a9cc; border-radius:8px; background:#f0f0f9; color:#555b91; font-family:inherit; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+.plc-component[data-plc-theme="dark"] .plc-group-control button.plc-group-button { background:#2c3047; color:#d3d5ef; border-color:#626b94; }
+.plc-group-control button.plc-group-button:hover:not(:disabled) { filter:brightness(1.08); }
+.plc-group-menu { position:absolute; z-index:30; left:10px; top:40px; width:246px; padding:8px; box-sizing:border-box; border:1px solid var(--border-color-primary,#a6a9cc); border-radius:10px; background:var(--input-background-fill,#fff); color:var(--plc-foreground); box-shadow:0 6px 24px rgba(0,0,0,.15); }
+.plc-group-list { display:flex; flex-direction:column; max-height:264px; overflow-y:auto; margin-bottom:8px; }
+.plc-group-control .plc-group-option { display:block; width:100%; min-width:0; text-align:left; padding:7px 9px; border:0; border-radius:6px; background:transparent; color:inherit; font:inherit; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+.plc-group-control .plc-group-option[aria-pressed="true"] { background:rgba(123,128,183,.17); }
+.plc-group-control .plc-group-option:hover:not(:disabled) { background:rgba(123,128,183,.12); }
+.plc-group-control input.plc-group-name { box-sizing:border-box; width:100%; min-width:0; padding:7px 9px; font-size:12px; }
+.plc-group-actions { display:flex; gap:7px; margin-top:7px; }
+.plc-group-actions > button.plc-action { border:1px solid var(--border-color-primary,#a6a9cc); border-radius:6px; background:var(--button-secondary-background-fill,transparent); color:var(--plc-foreground); padding:6px 10px; font:inherit; font-size:12px; cursor:pointer; }
+.plc-group-control button:disabled { opacity:.4; cursor:default; }
+.plc-group-control button:focus-visible { outline:2px solid var(--plc-accent); outline-offset:1px; }
+
+.plc-component[data-plc-theme="dark"] .plc-group-menu { background:var(--background-fill-primary,#20222a); }
+
+/* Group selection, creation and rename are visually separate actions. */
+.plc-group-edit { border-top:1px solid var(--border-color-primary,#a6a9cc); margin-top:10px; padding-top:10px; }
+.plc-group-caption { display:block; font-size:11px; opacity:.65; padding:0 2px; }
+.plc-group-actions { align-items:center; }
+.plc-group-actions input.plc-group-name { flex:1; width:0; height:32px; }
+.plc-group-actions > button.plc-action { flex:none; height:32px; white-space:nowrap; }
+.plc-group-control > .plc-group-menu > button.plc-group-add { width:100%; min-width:0; padding:8px 9px; text-align:left; border:0; border-radius:6px; background:transparent; color:var(--plc-foreground); font:inherit; font-size:12px; cursor:pointer; }
+.plc-group-control > .plc-group-menu > button.plc-group-add:hover { background:rgba(123,128,183,.12); }
+
+.plc-group-actions > button.plc-group-delete { padding-inline:7px; }
+.plc-group-control button.plc-group-delete:hover:not(:disabled) { color:#d06371; }
+
+.plc-preset-area { grid-template-columns:var(--plc-action-start,66px) minmax(0,1fr); }
+.plc-group-menu { width:354px; max-width:calc(100vw - 32px); }
+.plc-group-control button.plc-group-button, .plc-group-control .plc-group-option { display:flex; align-items:center; gap:7px; }
+.plc-group-label { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; }
+.plc-group-dot { display:inline-block; flex:none; width:10px; height:10px; border-radius:50%; border:0; box-shadow:none; }
+.plc-group-color-editor { display:flex; align-items:center; gap:7px; margin-top:8px; }
+.plc-group-color-editor[hidden] { display:none !important; }
+.plc-group-color-editor input { min-width:0; flex:1; }
+.plc-group-color-editor button { flex:none; }
+
+.plc-group-actions > button.plc-group-color-button { display:flex; align-items:center; justify-content:center; width:32px; padding:0; }
+.plc-group-color-button .plc-group-dot { width:14px; height:14px; }
+
+.plc-group-control button.plc-group-button { width:32px; padding:0; justify-content:center; }
+.plc-group-button .plc-group-dot { width:16px; height:16px; }
+
+/* The selected group is represented by the button surface itself. */
+.plc-group-control button.plc-group-button,
+.plc-component[data-plc-theme="dark"] .plc-group-control button.plc-group-button { border:0; box-shadow:none; transition:filter .14s ease, transform .14s ease; }
+.plc-group-control button.plc-group-button:hover:not(:disabled) { filter:brightness(.91); transform:translateY(-1px); }
+.plc-group-control button.plc-group-button:active:not(:disabled) { filter:brightness(.84); transform:translateY(0); }
+.plc-group-control button.plc-group-button:focus-visible { outline:2px solid var(--plc-accent); outline-offset:3px; }
+@media (prefers-reduced-motion: reduce) {
+ .plc-group-control button.plc-group-button { transition:none; }
+ .plc-group-control button.plc-group-button:hover:not(:disabled) { transform:none; }
+}
+.plc-group-control button.plc-group-button:hover:not(:disabled) { background-image:linear-gradient(rgba(127,127,127,.18),rgba(127,127,127,.18)); }
+.plc-group-control button.plc-group-button:active:not(:disabled) { background-image:linear-gradient(rgba(127,127,127,.3),rgba(127,127,127,.3)); }
+
+/* Group menu and color editor use the same borderless color surfaces. */
+.plc-group-control .plc-group-option { margin-bottom:4px; }
+.plc-group-control .plc-group-option[aria-pressed="true"] { font-weight:600; }
+.plc-group-actions > button.plc-group-color-button { border:0; box-shadow:none; border-radius:8px; }
+.plc-group-control .plc-group-option,
+.plc-group-actions > button.plc-group-color-button { transition:filter .14s ease, transform .14s ease; }
+.plc-group-control .plc-group-option:hover:not(:disabled),
+.plc-group-actions > button.plc-group-color-button:hover:not(:disabled) { filter:brightness(.91); background-image:linear-gradient(rgba(127,127,127,.18),rgba(127,127,127,.18)); transform:translateY(-1px); }
+.plc-group-control .plc-group-option:active:not(:disabled),
+.plc-group-actions > button.plc-group-color-button:active:not(:disabled) { filter:brightness(.84); transform:translateY(0); }
+.plc-group-actions > button.plc-group-color-button:focus-visible { outline:2px solid var(--plc-accent); outline-offset:3px; }
+@media (prefers-reduced-motion: reduce) {
+ .plc-group-control .plc-group-option, .plc-group-actions > button.plc-group-color-button { transition:none; transform:none !important; }
+}
+/* Preserve computed text contrast on colored, labelled menu items. */
+.plc-group-control .plc-group-option:hover:not(:disabled),
+.plc-group-control .plc-group-option:active:not(:disabled) { filter:none; background-image:none; }
+
+/* Match the existing Prompt Lines brand's 28px size and shared left axis. */
+.plc-group-control { padding-left:calc(var(--plc-control-axis,29px) - 14px); }
+.plc-group-control button.plc-group-button { width:28px; height:28px; border-radius:8px; }
+.plc-group-menu { left:calc(var(--plc-control-axis,29px) - 14px); }
+
+.plc-group-control { display:flex; align-items:center; padding-right:0; }
+.plc-group-control button.plc-group-button { flex:0 0 28px; }
+
+/* Reset host theme gradient layers as well as background-color. */
+.plc-group-control button.plc-group-button,
+.plc-group-actions > button.plc-group-color-button { background:var(--plc-group-color) !important; }
+
+/* Neutral group list: color marker plus a subtle selected-row highlight. */
+.plc-group-control button.plc-group-option { background:transparent !important; color:var(--plc-foreground); font-weight:400; }
+.plc-group-control button.plc-group-option[aria-pressed="true"] { background:rgba(123,128,183,.17) !important; }
+.plc-group-control button.plc-group-option:hover:not(:disabled) { background:rgba(123,128,183,.12) !important; transform:none; }
+.plc-group-control button.plc-group-option[aria-pressed="true"]:hover:not(:disabled) { background:rgba(123,128,183,.22) !important; }
+.plc-group-option .plc-group-dot { width:20px; height:20px; border-radius:6px; border:0; box-shadow:none; }
