@@ -9,3 +9,7 @@ Alt+クリックで、タグのまとまりを個別にオン・オフするこ�
 複数行の内容と有効・無効をプリセットに保存し、登録したボタンから切り替えられます。
 
 ![Prompt Lines のプリセット登録・呼び出しの表示イメージ](images/prompt-lines-presets.png)
+
+登録内容での連続生成と、グループごとのプリセット管理に対応しています。
+
+![Prompt Lines の連続生成・グループ管理の表示イメージ](images/prompt-lines-generation-groups.png)
