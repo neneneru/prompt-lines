@@ -1,7 +1,7 @@
-/* Prompt Lines 1.4.0. Original textareas and host parsing stay intact. */
+/* Prompt Lines. Original textareas and host parsing stay intact. */
 (() => {
     'use strict';
-    const API_VERSION = '1.4.12';
+    const API_VERSION = '1.5.0-preview.6';
     // Match Python's Unicode whitespace, excluding LF (the physical line separator).
     const SPACE = '[\\t \\r\\f\\v\\u001c-\\u001f\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
     const blank = text => new RegExp(`^(?:${SPACE}|\\n)*$`).test(text);
@@ -431,9 +431,40 @@
         });
     }
 
+    function sequenceInputs(sources) {
+        const source=sources.find(item=>item.scope==='txt2img_prompt');
+        const other=sources.find(item=>item.scope==='txt2img_neg_prompt');
+        const positive=source?.input, negative=other?.input;
+        // Use the exact textareas owned by the line controllers, never the first child input.
+        if(!source?.ready || !other?.ready || !positive?.isConnected || !negative?.isConnected ||
+            positive.tagName!=='TEXTAREA' || negative.tagName!=='TEXTAREA' || positive===negative)
+            return {error:'プロンプト欄の読み込みを待ってください。生成していません。'};
+        return {source,positive,negative};
+    }
+
+    function sequencePlan(prompt, negative, scope, presets, selection, config) {
+        if (scope !== 'txt2img_prompt') return {error:'自動生成はポジティブプリセット専用です。'};
+        const selected = new Set();
+        for (const part of selection.split(/[,，、]/)) {
+            const m = /^\s*(\d+)\s*(?:[-~〜～–]\s*(\d+)\s*)?$/.exec(part);
+            const start = m && Number(m[1]), end = m && Number(m[2] || m[1]);
+            if (!m || start < 1 || end < start || end > presets.length || end - start > 199) return {error:'対象ボタン番号を入力してください（例：1-5 / 2,4）。'};
+            for (let n=start; n<=end; n++) selected.add(n);
+        }
+        if (!selected.size || selected.size > 200) return {error:'対象は1〜200件で指定してください。'};
+        const jobs=[]; let current=prompt;
+        for (const n of [...selected].sort((a,b)=>a-b)) {
+            const preset=presets[n-1], plan=switchPlan(current,preset,presets,config);
+            if (plan.error) return {error:`${n} ${preset.name}：${plan.error.split('\n')[0]} 生成していません。`};
+            current=applyTextEdits(current,plan.edits);
+            jobs.push({id:preset.id,name:preset.name,prompt:current,negative});
+        }
+        return {scope,prompt,negative,jobs};
+    }
+
     // Pure functions are exported only to the Node test runner, never as WebUI globals.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
+        module.exports = {sequenceInputs, sequencePlan, editorIssues, captureRows, switchText, switchPlan, validPresets, presetOperations, linesOf, editFor, mapPosition, isCommented, editsForMode, applyTextEdits, mapEdits, syntaxOf, commentRanges, blockRanges, tagTargets, editsForTag};
         return;
     }
     if (window.__promptLinesLoaded) return;
@@ -532,6 +563,27 @@
         let lastValue = null, lastCap = '', lastSyntax = '', lastWidth = -1, lastHeight = -1, lastTheme = '';
         let rows = [], boxes = [], numbers = [], spans = [], visibleSpans = [], composing = false, raf = 0;
         let destroyed = false;
+        let feedback = null, feedbackTimer = 0;
+        const shakeTimers = new Map();
+        function clearFeedback() {
+            clearTimeout(feedbackTimer); feedbackTimer = 0; feedback = null;
+        }
+        function presetFailure(button, message) {
+            clearFeedback(); schedule(); showNotice(message);
+            clearTimeout(shakeTimers.get(button));
+            button.classList.remove('plc-preset-error');
+            void button.offsetWidth; // Restart feedback on repeated presses.
+            button.classList.add('plc-preset-error');
+            shakeTimers.set(button, setTimeout(() => { button.classList.remove('plc-preset-error'); shakeTimers.delete(button); }, 420));
+        }
+        function presetSuccess(plan, button) {
+            clearTimeout(shakeTimers.get(button)); shakeTimers.delete(button);
+            button.classList.remove('plc-preset-error');
+            clearFeedback();
+            feedback = {lines: new Set(plan.changes.map(change => change.line)), started: performance.now(), value: ta.value};
+            render();
+            feedbackTimer = setTimeout(() => { clearFeedback(); schedule(); }, 900);
+        }
         const listeners = [];
         const listen = (target, name, fn, options) => {
             target.addEventListener(name, fn, options);
@@ -558,7 +610,7 @@
         }
         function apply(edits, focusTarget, event) {
             const cap = capability();
-            if (composing || !cap.marker || ta.readOnly || ta.disabled || !edits.length) { render(); return; }
+            if (composing || !cap.marker || ta.readOnly || ta.disabled || !edits.length) { render(); return false; }
             const value = ta.value;
             const expected = applyTextEdits(value, edits);
             const first = Math.min(...edits.map(edit => edit.start));
@@ -579,7 +631,7 @@
                 if (ta.value === value) ta.setRangeText(replacement, first, endOfEdit, 'preserve');
                 if (ta.value !== expected) {
                     lastValue = null; schedule();
-                    return; // Never overwrite changes made by a conflicting editor.
+                    return false; // Never overwrite changes made by a conflicting editor.
                 }
                 if (!inputSeen) ta.dispatchEvent(new Event('input', {bubbles: true}));
             } finally {
@@ -590,7 +642,8 @@
             ta.dispatchEvent(new Event('change', {bubbles: true}));
             render();
             if (keyboard) focusTarget.focus({preventScroll: true});
-            requestAnimationFrame(() => { ta.scrollTop = top; ta.scrollLeft = left; schedule(); });
+            requestAnimationFrame(() => { if (!destroyed) { ta.scrollTop = top; ta.scrollLeft = left; schedule(); } });
+            return true;
         }
         function targetRects(target) {
             const row = rows[target.row];
@@ -884,18 +937,24 @@
             presetTrack.replaceChildren();
             presetStrip.hidden = !presets.length;
             for (const preset of presets) {
-                const button = make('button', 'plc-preset', preset.name); button.type = 'button';
+                const button = make('button', 'plc-preset', `${presets.indexOf(preset)+1} ${preset.name}`); button.type = 'button';
                 button.title = preset.operations.map(op => `${op.line}行目：${op.mode === 'disable' ? '無効化' : op.mode === 'enable' ? '有効化' : op.text}`).join('\n') + '\n右クリックまたは Shift＋クリックで編集';
                 button.addEventListener('click', event => {
                     if (event.shiftKey) { openEditor(preset); return; }
                     if (composing || !serverReady || storeBusy || !capability().marker || ta.readOnly || ta.disabled) return;
                     const value = ta.value;
                     const plan = switchPlan(value, preset, presets, capability());
-                    if (plan.error) { openEditor(preset); showNotice(plan.error + '\n全行未反映です。'); return; }
+                    if (plan.error) {
+                        openEditor(preset);
+                        presetFailure(button, plan.error.split('\n')[0] + ' 全行未反映です。'); return;
+                    }
                     if (plan.confirm && !window.confirm('次の行の内容が変わっています。まとめて変更しますか？\n\n' + plan.changes.filter(change => change.confirm).map(change => `${change.line}行目\n現在：${change.current}\n変更後：${change.text}`).join('\n\n'))) return;
-                    if (ta.value !== value) { showNotice('内容が更新されました。もう一度切替を押してください。'); return; }
+                    if (ta.value !== value) { presetFailure(button, '内容が更新されました。もう一度押してください。'); return; }
                     showNotice('');
-                    if (plan.edits.length) apply(plan.edits, button, event);
+                    if (plan.edits.length && !apply(plan.edits, button, event)) {
+                        presetFailure(button, '反映を確認できません。現在の内容を確認してください。'); return;
+                    }
+                    presetSuccess(plan, button);
                 });
                 button.addEventListener('contextmenu', event => { event.preventDefault(); openEditor(preset); });
                 presetTrack.append(button);
@@ -1003,6 +1062,7 @@
             layoutPresets();
             const capKey = JSON.stringify(cap) + composing + ta.disabled + ta.readOnly;
             const changed = ta.value !== lastValue;
+            if (feedback && feedback.value !== ta.value) clearFeedback();
             const syntaxKey = JSON.stringify(syntaxOf(cap));
             const syntaxChanged = syntaxKey !== lastSyntax;
             if (changed || syntaxChanged) {
@@ -1119,6 +1179,14 @@
                 numbers[i].style.visibility = y < -9 || y > ta.clientHeight - 9 ? 'hidden' : 'visible';
                 boxes[i].style.top = `${y}px`;
                 boxes[i].style.visibility = y < -9 || y > ta.clientHeight - 9 ? 'hidden' : 'visible';
+                if (feedback && feedback.lines.has(i + 1)) {
+                    const first = rect.top - mirrorBounds.top - ta.scrollTop - (lineHeight - rect.height) / 2;
+                    const height = rects[rects.length - 1].bottom - rect.top + lineHeight - rect.height;
+                    const flash = make('i', 'plc-row-applied');
+                    flash.style.top = `${first}px`; flash.style.height = `${height}px`;
+                    flash.style.animationDelay = `-${Math.min(899, performance.now() - feedback.started)}ms`;
+                    fragments.append(flash);
+                }
                 if (isCommented(rows[i], cap) && cap.marker) {
                     const first = rect.top - mirrorBounds.top - ta.scrollTop - (lineHeight - rect.height) / 2;
                     const last = rects[rects.length - 1];
@@ -1147,12 +1215,13 @@
         if (observer) observer.observe(ta);
         render();
         return {
+            sequenceSource() { return {scope:component.id, input:ta, presets:JSON.parse(JSON.stringify(presets)), ready:serverReady && !storeBusy}; },
             poll() {
                 if (ta.value !== lastValue || JSON.stringify(capability()) + composing + ta.disabled + ta.readOnly !== lastCap ||
                     ta.clientWidth !== lastWidth || ta.clientHeight !== lastHeight || themeSignature() !== lastTheme) schedule();
             },
             destroy() {
-                destroyed = true; if (raf) cancelAnimationFrame(raf);
+                destroyed = true; clearFeedback(); shakeTimers.forEach(timer => clearTimeout(timer)); shakeTimers.clear(); if (raf) cancelAnimationFrame(raf);
                 if (hoverRaf) cancelAnimationFrame(hoverRaf);
                 listeners.forEach(fn => fn()); if (observer) observer.disconnect();
                 nativeText(true);
@@ -1164,6 +1233,121 @@
             }
         };
     }
+    let sequenceSyncTheme = null;
+    let sequencePanel = null, sequenceBusy = false, sequenceToken = '', sequencePolling = false, cancelSequence = false;
+    const sequencePending = new Map();
+    const element = id => root().querySelector('#'+id);
+    const textbox = id => root().querySelector('#'+id+' textarea, #'+id+' input');
+    function setBridge(id,value) {
+        const input=textbox(id); if (!input) throw new Error('自動生成の準備ができていません。WebUIを再起動してください。');
+        const proto=input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto,'value').set.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+    function bridgeButton(id) { const el=element(id); return el && (el.matches('button')?el:el.querySelector('button')); }
+    window.promptLinesSequenceReady = raw => {
+        let ack; try {ack=JSON.parse(raw);} catch (_) {return;}
+        const pending=sequencePending.get(ack.requestId);
+        if (pending) {sequencePending.delete(ack.requestId);pending(ack);}
+    };
+    function sequencePrepare(data) {
+        return new Promise((resolve,reject)=>{
+            const requestId=crypto.randomUUID();
+            const timeout=setTimeout(()=>{sequencePending.delete(requestId);const error=new Error('開始を確認できません。WebUIを再読み込みしてから再試行してください。');error.uncertain=true;reject(error);},15000);
+            sequencePending.set(requestId,ack=>{clearTimeout(timeout);resolve(ack);});
+            try {setBridge('plc-sequence-request',JSON.stringify({...data,requestId}));
+                // Input hydration happens before the hidden native Gradio callback is submitted.
+                requestAnimationFrame(()=>{const button=bridgeButton('plc-sequence-arm');if(button)button.click();});
+            } catch(e) {clearTimeout(timeout);sequencePending.delete(requestId);reject(e);}
+        });
+    }
+    async function readSequenceStatus(cancel=false) {
+        const requestId=crypto.randomUUID();setBridge('plc-sequence-status-in',JSON.stringify({requestId,token:sequenceToken,cancel}));
+        await new Promise(resolve=>requestAnimationFrame(resolve)); bridgeButton('plc-sequence-poll')?.click();
+        const started=Date.now();
+        while(Date.now()-started<10000) {
+            try {const value=JSON.parse(textbox('plc-sequence-status-out')?.value||'');if(value.requestId===requestId)return value;}catch(_){}
+            await new Promise(resolve=>setTimeout(resolve,100));
+        }
+        throw new Error('状態を確認できません。ReForge側の進捗も確認してください。');
+    }
+    function mountSequence() {
+        const box=element('txt2img_generate_box'), native=bridgeButton('txt2img_generate');
+        if (!box || !native || !textbox('plc-sequence-request')) return;
+        if (sequencePanel?.isConnected) {sequenceSyncTheme?.();return;}
+        const panel=document.createElement('div');panel.className='plc-sequence-panel';sequencePanel=panel;
+        const row=document.createElement('div');row.className='plc-sequence-controls';
+        const range=document.createElement('input');range.type='text';range.className='plc-switch-input';range.placeholder='例：1-5 / 1-2,4-5';range.setAttribute('aria-label','対象ボタン番号');
+        const start=document.createElement('button');start.type='button';start.className='plc-sequence-start';start.textContent='自動生成';
+        const stop=document.createElement('button');stop.type='button';stop.className='plc-sequence-stop';stop.textContent='停止';stop.hidden=true;
+        const status=document.createElement('div');status.className='plc-sequence-status';status.setAttribute('role','status');status.textContent='各プリセットにバッチ設定を使用';
+        const rangeLabel=document.createElement('label');rangeLabel.className='plc-sequence-label';rangeLabel.htmlFor='plc-sequence-range';rangeLabel.textContent='指定プリセットを自動生成';range.id='plc-sequence-range';
+        row.append(stop,rangeLabel,range);panel.append(start,row,status);box.after(panel);
+        // Read native dimensions only; never resize or reparent the host's controls.
+        const matchNativeButton=()=>{
+            if(!panel.isConnected)return;
+            const rect=native.getBoundingClientRect();
+            if(rect.height>0){const height=rect.height+'px';if(start.style.height!==height)start.style.height=height;}
+            const style=getComputedStyle(native);
+            start.style.font=style.font;start.style.borderRadius=style.borderRadius;
+        };
+        sequenceSyncTheme=()=>{
+            const reference=root().querySelector('#txt2img_prompt .plc-range-controls .plc-switch-input');
+            if(!reference)return;
+            const theme=getComputedStyle(reference);
+            // Mirror the already themed range field, overriding broad host input rules.
+            for(const key of ['color','background-color','border-color','border-radius','font-family','font-size']) {
+                const value=theme.getPropertyValue(key);
+                if(value && range.style.getPropertyValue(key)!==value)range.style.setProperty(key,value,'important');
+            }
+            range.style.setProperty('caret-color',theme.color,'important');
+        };
+        sequenceSyncTheme();
+        matchNativeButton();
+        if(typeof ResizeObserver!=='undefined'){const observer=new ResizeObserver(()=>{if(!panel.isConnected){observer.disconnect();return;}matchNativeButton();});observer.observe(native);}
+        let allowNative=false;
+        native.addEventListener('click',event=>{
+            if(sequenceBusy && !allowNative){event.preventDefault();event.stopImmediatePropagation();}
+        },true);
+        const promptHost=element('tab_txt2img');
+        promptHost?.addEventListener('keydown',event=>{if(sequenceBusy&&event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();event.stopImmediatePropagation();}},true);
+        stop.addEventListener('click',()=>{cancelSequence=true;stop.disabled=true;status.textContent='停止を要求しています…';});
+        async function monitor() {
+            if(sequencePolling)return; sequencePolling=true;
+            try {
+                while(sequenceBusy && sequenceToken) {
+                    try {
+                        const result=await readSequenceStatus(cancelSequence);cancelSequence=false;
+                        status.textContent=result.message;
+                        if(result.status==='unknown'){status.textContent='生成状態が不明です。ReForge本体の進捗を確認してください。';break;}
+                        if(['done','error','stopped'].includes(result.status))break;
+                    } catch(e) {status.textContent=e.message;}
+                    await new Promise(resolve=>setTimeout(resolve,1000));
+                }
+            } finally {sequencePolling=false;sequenceBusy=false;start.disabled=false;range.disabled=false;stop.hidden=true;stop.disabled=false;}
+        }
+        start.addEventListener('click',async()=>{
+            if(sequenceBusy)return;
+            const inputs=sequenceInputs([...controllers.values()].map(c=>c.sequenceSource()));
+            if(inputs.error){status.textContent=inputs.error;return;}
+            const {source,positive,negative}=inputs;
+            const plan=sequencePlan(positive.value,negative.value,'txt2img_prompt',source.presets,range.value,capability());
+            if(plan.error){status.textContent=plan.error;return;}
+            sequenceBusy=true;start.disabled=true;range.disabled=true;status.textContent='確認中…';
+            const preparingHost=element('tab_txt2img');const wasInert=preparingHost?.inert||false;
+            if(preparingHost)preparingHost.inert=true;
+            try {
+                const ack=await sequencePrepare(plan);if(!ack.ok)throw new Error(ack.error);
+                sequenceToken=ack.token;
+                if(!positive.isConnected || !negative.isConnected || positive.value!==plan.prompt || negative.value!==plan.negative) {
+                    await readSequenceStatus(true);throw new Error('プロンプトが更新されました。生成していません。');
+                }
+                // This is the host's ordinary submit event, after the native output/then acknowledgement.
+                allowNative=true;native.click();allowNative=false;stop.hidden=false;
+                monitor();
+            } catch(e) {allowNative=false;if(!e.uncertain){sequenceBusy=false;start.disabled=false;range.disabled=false;}status.textContent=e.message;} finally {if(preparingHost)preparingHost.inert=wasInert;}
+        });
+    }
+
     function scan() {
         for (const [ta, controller] of controllers) {
             if (!ta.isConnected) { controller.destroy(); controllers.delete(ta); }
@@ -1175,6 +1359,8 @@
             if (ta && !controllers.has(ta)) controllers.set(ta, makeController(component, ta));
         }
     }
+    const baseScan = scan;
+    scan = function() { baseScan(); mountSequence(); };
     if (typeof onUiLoaded === 'function') onUiLoaded(scan);
     if (typeof onUiUpdate === 'function') onUiUpdate(scan);
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scan, {once: true});

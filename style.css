@@ -51,8 +51,7 @@
 .plc-presets button.plc-preset:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
 .plc-presets button.plc-preset:disabled { opacity: .4; cursor: default; }
 .plc-presets button.plc-preset:focus-visible,
-.plc-switch-editor button:focus-visible,
-.plc-switch-input:focus-visible { outline: 2px solid var(--plc-accent); outline-offset: 2px; }
+.plc-switch-editor button:focus-visible { outline: 2px solid var(--plc-accent); outline-offset: 2px; }
 .plc-switch-editor { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; padding: 12px; border-bottom: 1px solid var(--border-color-primary, #aaa5); }
 .plc-switch-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--body-text-color, inherit); }
 .plc-switch-field:nth-child(3) { grid-column: 1 / -1; }
@@ -105,8 +104,6 @@
     width: 28px;
     height: 28px;
     border-radius: 8px;
-    background: linear-gradient(135deg, #322c52, #504178 58%, #332a53);
-    color: #f0eaff;
     font-size: 0;
     line-height: 0;
     box-shadow: inset 0 1px 0 rgba(204, 184, 255, .11), 0 1px 3px rgba(0, 0, 0, .12);
@@ -426,3 +423,50 @@
 .plc-operation-error { grid-column:2 / -1; margin-top:5px; color:#bd3547; font-size:11px; line-height:1.5; }
 .plc-operation-error[hidden] { display:none !important; }
 .plc-component[data-plc-theme="dark"] .plc-operation-error { color:#f0a5ae; }
+
+/* Empty editor uses the same measured left axis as the name field. */
+.plc-switch-editor > button.plc-operation-add { margin-left:var(--plc-prompt-start,90px) !important; margin-right:12px; justify-self:start; }
+/* Brief feedback without changing document geometry or intercepting input. */
+.plc-row-applied { position:absolute; left:7px; right:7px; border-radius:7px; pointer-events:none !important; background:rgba(136,105,229,.18); animation:plc-applied 900ms cubic-bezier(.22,.61,.36,1) both; }
+@keyframes plc-applied { 0% { opacity:0; } 18%,30% { opacity:1; } 100% { opacity:0; } }
+.plc-presets button.plc-preset.plc-preset-error { animation:plc-rejected 420ms ease-out; }
+@keyframes plc-rejected { 0%,100% { transform:translateX(0); } 20%,60% { transform:translateX(-3px); } 40%,80% { transform:translateX(3px); } }
+@media (prefers-reduced-motion:reduce) {
+    .plc-row-applied { animation:none; opacity:1; }
+    .plc-presets button.plc-preset.plc-preset-error { animation:none; outline:2px solid var(--plc-accent); outline-offset:2px; }
+}
+
+/* Full-width sequence action; the native Generate and stop controls are untouched. */
+.plc-sequence-panel { --plc-accent:#8869e5; --plc-muted:var(--body-text-color-subdued,#a1a1aa); display:flex; flex-direction:column; gap:8px; width:100%; min-width:0; box-sizing:border-box; margin-top:4px; }
+.plc-sequence-panel > .plc-sequence-start { display:flex; align-items:center; justify-content:center; width:100%; box-sizing:border-box; height:48px; min-height:0; border:1px solid rgba(167,139,250,.35); border-radius:var(--button-large-radius,8px); padding:0 12px; cursor:pointer; font-weight:600; }
+.plc-sequence-panel > .plc-sequence-start:hover:not(:disabled) { filter:brightness(1.12); }
+.plc-sequence-panel button:disabled {opacity:.5;cursor:default;}
+.plc-sequence-controls {display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;}
+.plc-sequence-controls input {box-sizing:border-box;min-width:0;flex:0 1 315px;width:315px;max-width:100%;border:1px solid var(--input-border-color,rgba(167,139,250,.25));border-radius:var(--input-radius,8px);background:var(--input-background-fill,#202938);color:var(--body-text-color,#eee);padding:10px 12px;font-size:var(--input-text-size,14px);line-height:1.4;}
+.plc-sequence-controls input::placeholder {color:var(--plc-muted);opacity:.6;}
+.plc-sequence-controls button {flex:none;border:1px solid rgba(167,139,250,.35);border-radius:6px;background:rgba(139,92,246,.18);color:var(--body-text-color);padding:7px 10px;cursor:pointer;font-size:12px;white-space:nowrap;}
+.plc-sequence-controls [hidden] {display:none!important;}
+.plc-sequence-status {font-size:11px;color:var(--plc-muted);line-height:1.5;text-align:right;overflow-wrap:anywhere;}
+.plc-sequence-capability {font-size:12px;color:var(--body-text-color-subdued);}
+
+/* One brand palette for the left icon and the sequence action. */
+.plc-brand, .plc-sequence-panel > .plc-sequence-start { background:linear-gradient(135deg, #322c52, #504178 58%, #332a53); color:#f0eaff; }
+
+.plc-sequence-label {flex:0 1 auto;min-width:0;white-space:nowrap;font-size:12px;color:var(--plc-muted);}
+.plc-sequence-controls input {flex:0 1 210px;width:210px;}
+@media (max-width:600px) {.plc-sequence-label {font-size:11px;} .plc-sequence-controls {gap:6px;}}
+/* Keep labels readable at compact widths without overlapping the field. */
+.plc-sequence-label {flex:none;}
+.plc-sequence-controls {overflow-x:auto;scrollbar-width:thin;justify-content:safe flex-end;padding-bottom:2px;}
+.plc-sequence-controls input {min-width:110px;}
+
+/* The added fields share one inset purple focus ring: no layout shift or scroll clipping. */
+.plc-sequence-panel #plc-sequence-range {appearance:none !important;border-style:solid !important;border-width:1px !important;outline:none !important;box-shadow:none !important;}
+.plc-component .plc-switch-input:focus,
+.plc-sequence-panel #plc-sequence-range:focus {outline:none !important;box-shadow:inset 0 0 0 2px var(--plc-accent,#8869e5) !important;}
+.plc-component .plc-switch-input:focus-visible,
+.plc-sequence-panel #plc-sequence-range:focus-visible {outline:none !important;box-shadow:inset 0 0 0 2px var(--plc-accent,#8869e5) !important;}
+@media (forced-colors:active) {
+    .plc-component .plc-switch-input:focus,
+    .plc-sequence-panel #plc-sequence-range:focus {outline:2px solid Highlight !important;outline-offset:-3px !important;}
+}
